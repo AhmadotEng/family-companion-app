@@ -3,7 +3,79 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type Relationship = 'Parent' | 'Child' | 'Grandchild' | 'Grandparent' | 'Relative' | 'Admin' | 'Me' | 'Spouse';
+export type Relationship = 'Parent' | 'Child' | 'Grandchild' | 'Grandparent' | 'Relative' | 'Sibling' | 'Admin' | 'Me' | 'Spouse';
+
+export type RelationshipType = 'parent' | 'spouse' | 'sibling' | 'guardian' | 'relative';
+export type LocationPrecision = 'emirate' | 'city' | 'approximate' | 'exact';
+export type LocationVisibility = 'private' | 'family_admin' | 'family';
+export type FamilyRole = 'owner' | 'admin' | 'member';
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  displayName: string;
+}
+
+export interface FamilyAccess {
+  id: string;
+  name: string;
+  role: string;
+  linkedMemberId?: string;
+}
+
+export interface AuthSession {
+  user: AuthUser;
+  families: FamilyAccess[];
+  activeFamilyId?: string;
+}
+
+export interface ApiFamilyMember {
+  id: string;
+  familyId: string;
+  userId?: string;
+  displayName: string;
+  birthDate?: string;
+  phone?: string;
+  email?: string;
+  interests: string[];
+  notes?: string;
+  photoUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FamilyRelationship {
+  id: string;
+  familyId: string;
+  sourceMemberId: string;
+  targetMemberId: string;
+  type: RelationshipType;
+  createdAt: string;
+}
+
+export interface SafeLocation {
+  memberId: string;
+  source: 'manual' | 'browser' | 'member_shared';
+  precision: LocationPrecision;
+  visibility: LocationVisibility;
+  emirate?: string;
+  city?: string;
+  distanceBand?: string;
+  capturedAt: string;
+  expiresAt?: string;
+}
+
+export interface FamilyContext {
+  family: {
+    id: string;
+    name: string;
+    role: FamilyRole;
+  };
+  currentUser: AuthUser & { linkedMemberId?: string };
+  members: ApiFamilyMember[];
+  relationships: FamilyRelationship[];
+  safeLocations: SafeLocation[];
+}
 
 export interface FamilyMember {
   id: string;
@@ -27,10 +99,15 @@ export interface FamilyMember {
   spouseId?: string;
   spouseIds?: string[];
   childrenIds?: string[];
+  siblingIds?: string[];
   siblingGroupId?: string;
   familyBranch?: string;
   memories?: string[];
   generation?: number;
+  /** Server DTO retained so edits never need to reverse-map presentation fields. */
+  apiMember?: ApiFamilyMember;
+  /** Privacy-filtered location summary. Raw coordinates are never exposed here. */
+  safeLocation?: SafeLocation;
 }
 
 export interface Family {
@@ -90,6 +167,7 @@ export interface FamilyTreePerson {
   spouseId?: string;
   spouseIds?: string[];
   childrenIds: string[];
+  siblingIds?: string[];
   siblingGroupId?: string;
   birthday: string;
   contactInfo?: string;

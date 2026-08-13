@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
-import { Home, MessageSquare, MapPin, Users, Calendar, MoreHorizontal } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { Archive, Home, MessageSquare, MapPin, Users, Calendar, UserCircle } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 
 interface LayoutProps {
-  children: React.ReactNode;
+  children: ReactNode;
   activeTab: string;
   setActiveTab: (tab: string) => void;
   title: string;
@@ -17,7 +17,7 @@ export function Layout({ children, activeTab, setActiveTab, title }: LayoutProps
     { id: 'activities', icon: MapPin, label: 'Activities' },
     { id: 'tree', icon: Users, label: 'Heritage' },
     { id: 'calendar', icon: Calendar, label: 'Gatherings' },
-    { id: 'more', icon: MoreHorizontal, label: 'More' },
+    { id: 'archive', icon: Archive, label: 'Archive' },
   ];
 
   return (
@@ -31,32 +31,28 @@ export function Layout({ children, activeTab, setActiveTab, title }: LayoutProps
           </h1>
           <p className="text-[10px] uppercase tracking-widest mt-2 opacity-40 font-bold">Heritage & Harmony</p>
         </div>
-        <button onClick={() => setActiveTab('more')} className="w-12 h-12 rounded-full bg-sand border border-sepia flex items-center justify-center overflow-hidden hover:scale-105 transition-transform">
-             <img src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100&h=100&fit=crop" alt="Profile" className="w-full h-full object-cover" />
+        <button aria-label="Open profile and settings" onClick={() => setActiveTab('more')} className="w-12 h-12 rounded-full bg-sand border border-sepia flex items-center justify-center overflow-hidden hover:scale-105 transition-transform">
+             <UserCircle size={28} className="text-ink/50" />
         </button>
       </header>
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto pb-24 scroll-smooth">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={activeTab}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={{ duration: 0.3, ease: "easeOut" }}
-            className={cn(
-              "p-8 mx-auto",
-              activeTab === 'tree' ? "w-full max-w-[1600px]" : "max-w-2xl"
-            )}
-          >
-            <div className="mb-8 flex justify-between items-baseline border-b border-sepia pb-4">
-               <h2 className="font-serif text-3xl italic text-ink">{title}</h2>
-               <span className="text-[10px] uppercase tracking-widest opacity-40 font-bold">UAE / {activeTab}</span>
-            </div>
-            {children}
-          </motion.div>
-        </AnimatePresence>
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, ease: "easeOut" }}
+          className={cn(
+            "p-8 mx-auto",
+            activeTab === 'tree' ? "w-full max-w-[1600px]" : "max-w-2xl"
+          )}
+        >
+          <div className="mb-8 flex justify-between items-baseline border-b border-sepia pb-4">
+             <h2 className="font-serif text-3xl italic text-ink">{title}</h2>
+             <span className="text-[10px] uppercase tracking-widest opacity-40 font-bold">UAE / {activeTab}</span>
+          </div>
+          {children}
+        </motion.div>
       </main>
 
       {/* Bottom Nav */}

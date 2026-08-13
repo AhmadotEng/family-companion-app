@@ -1,20 +1,26 @@
 import React, { useState } from 'react';
-import { FamilyMember, Relationship } from '../types';
-import { Plus, Search, Heart, X, Calendar, Phone, Sparkles, UserPlus, Trash2, Users, Share2, Camera, Upload, UserCircle } from 'lucide-react';
+import { FamilyMember, FamilyRole, LocationPrecision, LocationVisibility } from '../types';
+import { Plus, Search, Heart, X, Calendar, Phone, Sparkles, UserPlus, Trash2, Users, Share2, Camera, Upload, UserCircle, LoaderCircle, LocateFixed, MapPin, Save, ShieldCheck } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { computeTreeLayout, generateConnections } from '../lib/treeLayout';
+import { ApiError, familyApi } from '../api/client';
+import { buildAddRelativeRequest, RelativeLinkType } from '../lib/familyRelationship';
 
 interface FamilyTreeProps {
+  familyId: string;
+  familyName: string;
   members: FamilyMember[];
-  setMembers: React.Dispatch<React.SetStateAction<FamilyMember[]>>;
+  currentUserMemberId?: string;
+  familyRole?: FamilyRole;
+  onRefresh: () => Promise<void> | void;
 }
 
 export const getGeneration = (member: FamilyMember): number => {
   if (member.generation !== undefined) return member.generation;
   if (member.relationship === 'Grandparent' || member.familyBranch === 'Elders') return 0;
   if (member.relationship === 'Parent') return 1;
-  if (member.relationship === 'Me' || member.id === 'm1') return 2;
+  if (member.relationship === 'Me') return 2;
   return 3;
 };
 
@@ -159,9 +165,9 @@ function CameraCaptureModal({ onCapture, onClose }: { onCapture: (photo: string)
 function PhotoPicker({
   photo,
   fallbackSeed,
-  onUpload,
-  onCamera,
-  onAnonymous
+  onUpload: _onUpload,
+  onCamera: _onCamera,
+  onAnonymous: _onAnonymous
 }: {
   photo?: string;
   fallbackSeed: string;
@@ -177,16 +183,17 @@ function PhotoPicker({
       <div className="flex-1 min-w-0">
         <p className="text-[10px] font-bold uppercase tracking-wider text-ink/50 mb-2">Profile Photo</p>
         <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={onUpload} className="px-3 py-2 bg-white border border-sepia rounded-xl text-[9px] font-bold uppercase tracking-widest text-ink/70 hover:border-gold hover:text-gold transition-all flex items-center gap-1.5">
+          <button type="button" disabled title="Private media storage is not connected yet" className="px-3 py-2 bg-white border border-sepia rounded-xl text-[9px] font-bold uppercase tracking-widest text-ink/30 cursor-not-allowed flex items-center gap-1.5">
             <Upload size={13} /> Upload
           </button>
-          <button type="button" onClick={onCamera} className="px-3 py-2 bg-white border border-sepia rounded-xl text-[9px] font-bold uppercase tracking-widest text-ink/70 hover:border-gold hover:text-gold transition-all flex items-center gap-1.5">
+          <button type="button" disabled title="Private media storage is not connected yet" className="px-3 py-2 bg-white border border-sepia rounded-xl text-[9px] font-bold uppercase tracking-widest text-ink/30 cursor-not-allowed flex items-center gap-1.5">
             <Camera size={13} /> Camera
           </button>
-          <button type="button" onClick={onAnonymous} className="px-3 py-2 bg-white border border-sepia rounded-xl text-[9px] font-bold uppercase tracking-widest text-ink/70 hover:border-gold hover:text-gold transition-all flex items-center gap-1.5">
+          <button type="button" disabled title="Private media storage is not connected yet" className="px-3 py-2 bg-white border border-sepia rounded-xl text-[9px] font-bold uppercase tracking-widest text-ink/30 cursor-not-allowed flex items-center gap-1.5">
             <UserCircle size={13} /> Anonymous
           </button>
         </div>
+        <p className="text-[9px] text-ink/40 mt-2">Private media storage is the next milestone; no photo is uploaded locally.</p>
       </div>
     </div>
   );
@@ -232,10 +239,21 @@ function FloralCorner({ side }: { side: 'left' | 'right' }) {
   );
 }
 
-export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
+export function FamilyTree({ familyId, familyName, members, currentUserMemberId, familyRole = 'member', onRefresh }: FamilyTreeProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPerson, setSelectedPerson] = useState<FamilyMember | null>(null);
   const [addModalOpen, setAddModalOpen] = useState(false);
+  const [mutationError, setMutationError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const canAdministerFamily = familyRole === 'owner' || familyRole === 'admin';
+
+  const [locationPrecision, setLocationPrecision] = useState<LocationPrecision>('approximate');
+  const [locationVisibility, setLocationVisibility] = useState<LocationVisibility>('family_admin');
+  const [locationExpiryHours, setLocationExpiryHours] = useState('168');
+  const [locationConsent, setLocationConsent] = useState(false);
+  const [locationStatus, setLocationStatus] = useState('');
+  const [locationError, setLocationError] = useState('');
+  const [locating, setLocating] = useState(false);
 
   // Panning State
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -258,18 +276,48 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
 
   // Form state for adding a relative
   const [formName, setFormName] = useState('');
-  const [formRelatedToId, setFormRelatedToId] = useState('m1');
-  const [formLinkType, setFormLinkType] = useState('Son');
+  const [formRelatedToId, setFormRelatedToId] = useState(currentUserMemberId || members[0]?.id || '');
+  const [formLinkType, setFormLinkType] = useState<RelativeLinkType>('Son');
   const [formBirthday, setFormBirthday] = useState('2000-01-01');
   const [formContact, setFormContact] = useState('');
-  const [formBranch, setFormBranch] = useState('Main');
   const [formNotes, setFormNotes] = useState('');
-  const [formMemory, setFormMemory] = useState('');
   const [formPhoto, setFormPhoto] = useState('');
   const [formCoParentId, setFormCoParentId] = useState('');
+  const [formEmirate, setFormEmirate] = useState('');
   const [cameraTarget, setCameraTarget] = useState<'add' | 'edit' | null>(null);
   const addPhotoInputRef = React.useRef<HTMLInputElement | null>(null);
   const editPhotoInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const [editName, setEditName] = useState('');
+  const [editBirthday, setEditBirthday] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editNotes, setEditNotes] = useState('');
+
+  React.useEffect(() => {
+    if (!members.some(member => member.id === formRelatedToId)) {
+      setFormRelatedToId(currentUserMemberId || members[0]?.id || '');
+    }
+  }, [currentUserMemberId, formRelatedToId, members]);
+
+  React.useEffect(() => {
+    if (!selectedPerson) return;
+    const latest = members.find(member => member.id === selectedPerson.id);
+    if (!latest) {
+      setSelectedPerson(null);
+      return;
+    }
+    if (latest !== selectedPerson) setSelectedPerson(latest);
+  }, [members, selectedPerson]);
+
+  React.useEffect(() => {
+    if (!selectedPerson) return;
+    setEditName(selectedPerson.name);
+    setEditBirthday(selectedPerson.birthday || '');
+    setEditPhone(selectedPerson.phone || '');
+    setEditEmail(selectedPerson.email || '');
+    setEditNotes(selectedPerson.notes || '');
+  }, [selectedPerson?.id]);
 
   const formRelatedPerson = React.useMemo(
     () => members.find(member => member.id === formRelatedToId),
@@ -285,21 +333,18 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
   );
 
   React.useEffect(() => {
-    if ((formLinkType === 'Son' || formLinkType === 'Daughter') && formSpouseOptions.length > 1) {
-      if (!formSpouseOptions.some(spouse => spouse.id === formCoParentId)) {
-        setFormCoParentId(formSpouseOptions[0].id);
-      }
-      return;
-    }
-
-    if (formCoParentId) {
+    if (formCoParentId && !formSpouseOptions.some(spouse => spouse.id === formCoParentId)) {
       setFormCoParentId('');
     }
-  }, [formCoParentId, formLinkType, formSpouseOptions]);
+  }, [formCoParentId, formSpouseOptions]);
 
   const readPhotoFile = (file: File, onPhotoReady: (photo: string) => void) => {
     if (!file.type.startsWith('image/')) {
-      alert('Please choose an image file.');
+      setMutationError('Please choose an image file.');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setMutationError('Profile photos must be smaller than 2 MB.');
       return;
     }
 
@@ -320,13 +365,18 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
     e.target.value = '';
   };
 
-  const updateSelectedPersonPhoto = (photo: string) => {
+  const updateSelectedPersonPhoto = async (photo: string) => {
     if (!selectedPerson) return;
-
-    setMembers(prev => prev.map(person => (
-      person.id === selectedPerson.id ? { ...person, photo } : person
-    )));
-    setSelectedPerson(prev => prev ? { ...prev, photo } : prev);
+    setSaving(true);
+    setMutationError('');
+    try {
+      await familyApi.updateMember(selectedPerson.id, { photoUrl: photo });
+      await onRefresh();
+    } catch (caught) {
+      setMutationError(caught instanceof ApiError ? caught.message : 'The profile photo could not be saved.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleEditPhotoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -344,177 +394,179 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
     }
 
     if (cameraTarget === 'edit') {
-      updateSelectedPersonPhoto(photo);
+      void updateSelectedPersonPhoto(photo);
     }
   };
 
-  const handleAddMemberSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formName.trim() || !formRelatedToId) return;
-
-    const relatedPerson = members.find(m => m.id === formRelatedToId);
-    if (!relatedPerson) return;
-
-    const relatedGen = getGeneration(relatedPerson);
-    let newGen = 2;
-    let newRel: Relationship = 'Relative';
-
-    if (formLinkType === 'Father' || formLinkType === 'Mother') {
-      newGen = relatedGen - 1;
-      newRel = newGen <= 0 ? 'Grandparent' : 'Parent';
-    } else if (formLinkType === 'Son' || formLinkType === 'Daughter') {
-      newGen = relatedGen + 1;
-      newRel = newGen >= 4 ? 'Grandchild' : 'Child';
-    } else if (formLinkType === 'Brother' || formLinkType === 'Sister') {
-      newGen = relatedGen;
-      newRel = 'Relative';
-    } else if (formLinkType === 'Spouse') {
-      newGen = relatedGen;
-      newRel = 'Spouse';
-    }
-
-    const newId = `m_added_${Date.now()}`;
-    const spouseCandidateIds = getSpouseIds(relatedPerson);
-    const selectedCoParentId = formLinkType === 'Son' || formLinkType === 'Daughter'
-      ? spouseCandidateIds.length > 1 ? (formCoParentId || spouseCandidateIds[0]) : spouseCandidateIds[0]
-      : undefined;
-    const relatedSiblingIds = (formLinkType === 'Father' || formLinkType === 'Mother') && relatedPerson.siblingGroupId
-      ? members
-        .filter(member => member.siblingGroupId === relatedPerson.siblingGroupId)
-        .map(member => member.id)
-      : [formRelatedToId];
-    const siblingGroupId = (formLinkType === 'Brother' || formLinkType === 'Sister') && !(relatedPerson.parentIds?.length)
-      ? relatedPerson.siblingGroupId || `sg_${relatedPerson.id}`
-      : undefined;
-    const existingParentPartner = formLinkType === 'Father' || formLinkType === 'Mother'
-      ? relatedPerson.parentIds
-        ?.map(parentId => members.find(member => member.id === parentId))
-        .find((parent): parent is FamilyMember => Boolean(parent && getGeneration(parent) === newGen))
-      : undefined;
-    const newPerson: FamilyMember = {
-      id: newId,
-      name: formName,
-      age: 2026 - parseInt(formBirthday.split('-')[0] || '2000'),
-      birthday: formBirthday,
-      relationship: newRel,
-      phone: formContact,
-      email: `${formName.toLowerCase().replace(/\s+/g, '')}@family.ae`,
-      interests: [],
-      locationSharingStatus: 'Inactive',
-      photo: formPhoto || createAnonymousAvatar(`${newId}-${formName}`),
-      parentIds: [],
-      spouseId: undefined,
-      spouseIds: [],
-      childrenIds: [],
-      siblingGroupId,
-      familyBranch: formBranch,
-      notes: formNotes || undefined,
-      memories: formMemory ? [formMemory] : [],
-      generation: newGen
-    };
-
-    if (formLinkType === 'Father' || formLinkType === 'Mother') {
-      newPerson.childrenIds = relatedSiblingIds;
-      if (existingParentPartner) {
-        newPerson.spouseId = existingParentPartner.id;
-        newPerson.spouseIds = [existingParentPartner.id];
-      }
-    } else if (formLinkType === 'Son' || formLinkType === 'Daughter') {
-      newPerson.parentIds = [formRelatedToId];
-      if (selectedCoParentId) {
-        newPerson.parentIds.push(selectedCoParentId);
-      }
-    } else if (formLinkType === 'Brother' || formLinkType === 'Sister') {
-      newPerson.parentIds = relatedPerson.parentIds || [];
-    } else if (formLinkType === 'Spouse') {
-      newPerson.spouseId = formRelatedToId;
-      newPerson.spouseIds = [formRelatedToId];
-      newPerson.childrenIds = [];
-    }
-
-    setMembers(prev => {
-      return prev.map(person => {
-        if ((formLinkType === 'Father' || formLinkType === 'Mother') && relatedSiblingIds.includes(person.id)) {
-          return {
-            ...person,
-            parentIds: addUniqueId(person.parentIds, newId)
-          };
-        }
-        if ((formLinkType === 'Father' || formLinkType === 'Mother') && person.id === existingParentPartner?.id) {
-          return {
-            ...person,
-            spouseId: person.spouseId || newId,
-            spouseIds: addUniqueId(person.spouseIds, newId),
-            childrenIds: addUniqueIds(person.childrenIds, relatedSiblingIds)
-          };
-        }
-        if (formLinkType === 'Spouse' && person.id === formRelatedToId) {
-          return {
-            ...person,
-            spouseId: person.spouseId || newId,
-            spouseIds: addUniqueId(person.spouseIds, newId)
-          };
-        }
-        if ((formLinkType === 'Son' || formLinkType === 'Daughter') && person.id === formRelatedToId) {
-          return {
-            ...person,
-            childrenIds: addUniqueId(person.childrenIds, newId)
-          };
-        }
-        if ((formLinkType === 'Son' || formLinkType === 'Daughter') && selectedCoParentId && person.id === selectedCoParentId) {
-          return {
-            ...person,
-            childrenIds: addUniqueId(person.childrenIds, newId)
-          };
-        }
-        if ((formLinkType === 'Brother' || formLinkType === 'Sister') && siblingGroupId && (person.id === formRelatedToId || person.siblingGroupId === siblingGroupId)) {
-          return {
-            ...person,
-            siblingGroupId
-          };
-        }
-        if ((formLinkType === 'Brother' || formLinkType === 'Sister') && relatedPerson.parentIds?.includes(person.id)) {
-          return {
-            ...person,
-            childrenIds: addUniqueId(person.childrenIds, newId)
-          };
-        }
-        return person;
-      }).concat(newPerson);
-    });
-
-    setAddModalOpen(false);
-    
-    // Clear form
+  const resetAddForm = () => {
     setFormName('');
-    setFormRelatedToId('m1');
+    setFormRelatedToId(currentUserMemberId || members[0]?.id || '');
     setFormLinkType('Son');
     setFormBirthday('2000-01-01');
     setFormContact('');
-    setFormBranch('Main');
     setFormNotes('');
-    setFormMemory('');
     setFormPhoto('');
     setFormCoParentId('');
+    setFormEmirate('');
   };
 
-  const handleRemoveMember = (memberId: string) => {
-    if (memberId === 'm1') {
-      alert("You cannot remove yourself ('Ahmed Al Mansouri') as the main family administrator.");
+  const handleAddMemberSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formName.trim() || !formRelatedToId) return;
+    setSaving(true);
+    setMutationError('');
+    try {
+      await familyApi.createMember(familyId, buildAddRelativeRequest({
+        displayName: formName,
+        birthDate: formBirthday,
+        phone: formContact,
+        notes: formNotes,
+        photoUrl: formPhoto,
+        relatedMemberId: formRelatedToId,
+        linkType: formLinkType,
+        coParentId: formCoParentId,
+        emirate: formEmirate
+      }));
+
+      await onRefresh();
+      setAddModalOpen(false);
+      resetAddForm();
+    } catch (caught) {
+      // The server transaction is authoritative; reload even after an error in
+      // case the member was created before an optional co-parent link failed.
+      await onRefresh();
+      setMutationError(caught instanceof ApiError ? caught.message : 'The relative could not be saved.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRemoveMember = async (memberId: string) => {
+    if (!canAdministerFamily) {
+      setMutationError('Only a family owner or administrator can remove relatives.');
+      return;
+    }
+    if (memberId === currentUserMemberId) {
+      setMutationError('You cannot remove the family profile linked to your signed-in account.');
       return;
     }
     const target = members.find(m => m.id === memberId);
     if (!target) return;
 
     if (confirm(`Are you sure you want to remove ${target.name} from the family lineage and dashboard?`)) {
-      setMembers(prev => prev.filter(m => m.id !== memberId).map(m => ({
-        ...m,
-        parentIds: m.parentIds ? m.parentIds.filter(id => id !== memberId) : [],
-        childrenIds: m.childrenIds ? m.childrenIds.filter(id => id !== memberId) : [],
-        spouseId: m.spouseId === memberId ? undefined : m.spouseId,
-        spouseIds: m.spouseIds ? m.spouseIds.filter(id => id !== memberId) : []
-      })));
-      setSelectedPerson(null);
+      setSaving(true);
+      setMutationError('');
+      try {
+        await familyApi.deleteMember(memberId);
+        setSelectedPerson(null);
+        await onRefresh();
+      } catch (caught) {
+        setMutationError(caught instanceof ApiError ? caught.message : 'The relative could not be removed.');
+      } finally {
+        setSaving(false);
+      }
+    }
+  };
+
+  const handleSaveProfile = async () => {
+    if (!selectedPerson || !editName.trim()) return;
+    if (!canAdministerFamily && selectedPerson.id !== currentUserMemberId) {
+      setMutationError('You can edit only the profile linked to your own account.');
+      return;
+    }
+    setSaving(true);
+    setMutationError('');
+    try {
+      await familyApi.updateMember(selectedPerson.id, {
+        displayName: editName.trim(),
+        birthDate: editBirthday || null,
+        phone: editPhone.trim() || null,
+        email: editEmail.trim() || null,
+        notes: editNotes.trim() || null
+      });
+      await onRefresh();
+    } catch (caught) {
+      setMutationError(caught instanceof ApiError ? caught.message : 'The profile changes could not be saved.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleShareMyLocation = async () => {
+    if (!currentUserMemberId) {
+      setLocationError('Your account is not linked to a family member profile.');
+      return;
+    }
+    if (!locationConsent) {
+      setLocationError('Confirm consent before requesting your device location.');
+      return;
+    }
+    if (!navigator.geolocation) {
+      setLocationError('This browser does not support location access.');
+      return;
+    }
+    if (!window.isSecureContext) {
+      setLocationError('Location access requires HTTPS or localhost.');
+      return;
+    }
+
+    setLocating(true);
+    setLocationError('');
+    setLocationStatus('Waiting for your browser permission…');
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: locationPrecision === 'exact',
+          maximumAge: 0,
+          timeout: 15000
+        });
+      });
+      await familyApi.updateLocation(currentUserMemberId, {
+        consentGranted: true,
+        source: 'browser',
+        precision: locationPrecision,
+        visibility: locationVisibility,
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        accuracyM: position.coords.accuracy,
+        expiresAt: locationExpiryHours
+          ? new Date(Date.now() + Number(locationExpiryHours) * 60 * 60 * 1000).toISOString()
+          : undefined
+      });
+      await onRefresh();
+      setLocationStatus('Your one-time location update was saved with the selected privacy level.');
+    } catch (caught) {
+      if (caught && typeof caught === 'object' && 'code' in caught) {
+        const geolocationError = caught as GeolocationPositionError;
+        setLocationError(geolocationError.code === 1
+          ? 'Location permission was denied. Nothing was shared.'
+          : geolocationError.code === 3
+            ? 'The location request timed out. Nothing was shared.'
+            : 'Your location could not be determined. Nothing was shared.');
+      } else {
+        setLocationError(caught instanceof ApiError ? caught.message : 'Your location could not be saved.');
+      }
+      setLocationStatus('');
+    } finally {
+      setLocating(false);
+    }
+  };
+
+  const handleRevokeMyLocation = async () => {
+    if (!currentUserMemberId) return;
+    if (!confirm('Stop sharing and delete your currently stored location?')) return;
+    setLocating(true);
+    setLocationError('');
+    setLocationStatus('');
+    try {
+      await familyApi.revokeLocation(currentUserMemberId);
+      setLocationConsent(false);
+      setLocationStatus('Your location consent was revoked and the stored location was deleted.');
+      await onRefresh();
+    } catch (caught) {
+      setLocationError(caught instanceof ApiError ? caught.message : 'Your location could not be removed.');
+    } finally {
+      setLocating(false);
     }
   };
 
@@ -522,7 +574,10 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
   const X_SPACING = 280;
   const Y_SPACING = 180;
   
-  const layoutNodes = React.useMemo(() => computeTreeLayout(members), [members]);
+  const layoutNodes = React.useMemo(
+    () => computeTreeLayout(members, currentUserMemberId || members[0]?.id),
+    [currentUserMemberId, members]
+  );
   const connectionLines = React.useMemo(() => generateConnections(layoutNodes, X_SPACING, Y_SPACING), [layoutNodes]);
   const connectionHearts = React.useMemo(() => {
     const hearts = new Map<string, { id: string; x: number; y: number }>();
@@ -548,16 +603,19 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
         <div className="relative z-10 flex flex-col gap-6 items-center w-full">
           <div className="space-y-1">
             <p className="text-[10px] uppercase font-bold tracking-[0.3em] text-ink/40">Digital Family Tree of</p>
-            <h3 className="text-4xl font-serif italic text-ink tracking-wide">Ahmed Al Mansouri</h3>
+            <h3 className="text-4xl font-serif italic text-ink tracking-wide">{familyName}</h3>
             <div className="w-16 h-px bg-sepia mx-auto mt-4 opacity-50 border-t border-dashed"></div>
           </div>
           <div className="flex gap-3 w-full max-w-lg justify-center">
-            <button 
-              onClick={() => setAddModalOpen(true)}
-              className="bg-ink text-white px-6 py-2.5 rounded-full text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 shadow-lg hover:bg-gold transition-colors"
-            >
-              <Plus size={16} /> Add relative
-            </button>
+            {canAdministerFamily && (
+              <button
+                onClick={() => setAddModalOpen(true)}
+                disabled={!members.length || saving}
+                className="bg-ink text-white px-6 py-2.5 rounded-full text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 shadow-lg hover:bg-gold transition-colors"
+              >
+                <Plus size={16} /> Add relative
+              </button>
+            )}
             <div className="relative flex-1 max-w-xs">
               <input 
                 type="text" 
@@ -579,6 +637,82 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
           <Users size={220} />
         </div>
       </section>
+
+      {mutationError && (
+        <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 flex items-start justify-between gap-4">
+          <span>{mutationError}</span>
+          <button type="button" onClick={() => setMutationError('')} aria-label="Dismiss error"><X size={16} /></button>
+        </div>
+      )}
+
+      {currentUserMemberId && (
+        <section className="bg-white border border-sepia rounded-[2rem] p-6 shadow-sm" aria-labelledby="location-sharing-heading">
+          <div className="flex flex-col lg:flex-row lg:items-start gap-6">
+            <div className="flex-1">
+              <div className="flex items-center gap-2">
+                <LocateFixed size={18} className="text-gold" />
+                <h4 id="location-sharing-heading" className="font-serif italic text-xl">Share my location once</h4>
+              </div>
+              <p className="text-xs text-ink/55 mt-2 leading-relaxed max-w-xl">
+                This runs only when you press the button. It does not track you in the background. Non-exact coordinates are rounded before storage; the family map and AI receive only an authorized area or coarse distance summary.
+              </p>
+              {members.find(member => member.id === currentUserMemberId)?.safeLocation && (
+                <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                  <MapPin size={12} />
+                  {(() => {
+                    const location = members.find(member => member.id === currentUserMemberId)?.safeLocation;
+                    return location?.city || location?.emirate || location?.distanceBand || 'Location summary shared';
+                  })()}
+                </div>
+              )}
+            </div>
+            <div className="w-full lg:w-[360px] space-y-3">
+              <div className="grid grid-cols-3 gap-3">
+                <label className="text-[9px] uppercase tracking-wider font-bold text-ink/60">
+                  Precision
+                  <select value={locationPrecision} onChange={event => setLocationPrecision(event.target.value as LocationPrecision)} className="mt-1 w-full rounded-xl border border-sepia bg-sand/30 px-3 py-2 text-xs normal-case tracking-normal text-ink">
+                    <option value="approximate">Approximate area</option>
+                    <option value="city">City-level</option>
+                    <option value="exact">Exact (private storage)</option>
+                  </select>
+                </label>
+                <label className="text-[9px] uppercase tracking-wider font-bold text-ink/60">
+                  Visible to
+                  <select value={locationVisibility} onChange={event => setLocationVisibility(event.target.value as LocationVisibility)} className="mt-1 w-full rounded-xl border border-sepia bg-sand/30 px-3 py-2 text-xs normal-case tracking-normal text-ink">
+                    <option value="private">Only me</option>
+                    <option value="family_admin">Family admins</option>
+                    <option value="family">Family</option>
+                  </select>
+                </label>
+                <label className="text-[9px] uppercase tracking-wider font-bold text-ink/60">
+                  Expires
+                  <select value={locationExpiryHours} onChange={event => setLocationExpiryHours(event.target.value)} className="mt-1 w-full rounded-xl border border-sepia bg-sand/30 px-3 py-2 text-xs normal-case tracking-normal text-ink">
+                    <option value="24">24 hours</option>
+                    <option value="168">7 days</option>
+                    <option value="720">30 days</option>
+                    <option value="">Until replaced</option>
+                  </select>
+                </label>
+              </div>
+              <label className="flex items-start gap-2 text-[11px] text-ink/65 leading-relaxed">
+                <input type="checkbox" checked={locationConsent} onChange={event => setLocationConsent(event.target.checked)} className="mt-0.5 accent-[#C5A059]" />
+                I consent to this one-time location request and the selected visibility.
+              </label>
+              <button type="button" onClick={handleShareMyLocation} disabled={!locationConsent || locating} className="w-full bg-ink text-white rounded-xl py-2.5 text-[9px] uppercase tracking-widest font-bold flex items-center justify-center gap-2 hover:bg-gold disabled:opacity-40">
+                {locating ? <LoaderCircle size={14} className="animate-spin" /> : <LocateFixed size={14} />}
+                {locating ? 'Requesting permission' : 'Request and save location'}
+              </button>
+              {members.find(member => member.id === currentUserMemberId)?.safeLocation && (
+                <button type="button" onClick={handleRevokeMyLocation} disabled={locating} className="w-full rounded-xl border border-red-200 bg-red-50 py-2.5 text-[9px] font-bold uppercase tracking-widest text-red-700 hover:bg-red-100 disabled:opacity-40">
+                  Revoke consent & delete location
+                </button>
+              )}
+              {locationStatus && <p role="status" className="text-[11px] text-emerald-700">{locationStatus}</p>}
+              {locationError && <p role="alert" className="text-[11px] text-red-600">{locationError}</p>}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Interactive Tree Canvas */}
       <div 
@@ -664,16 +798,13 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
         </p>
       </div>
 
-      <button 
-        onClick={() => alert("Digital family tree link generated: 'https://familytree.mansouri.ae/share/f1'. Copied to clipboard! Send to WhatsApp groups to let cousins join.")}
-        className="flex items-center justify-center gap-3 text-gold text-[10px] uppercase font-bold tracking-[0.2em] py-6 hover:text-ink transition-colors"
-      >
-        <Share2 size={16} /> Share tree with extended family
-      </button>
+      <p className="flex items-center justify-center gap-3 py-6 text-[10px] font-bold uppercase tracking-[0.2em] text-ink/45">
+        <Share2 size={16} /> Select relatives for private invitations in Gatherings
+      </p>
 
       {/* Add Relative Modal */}
       <AnimatePresence>
-        {addModalOpen && (
+        {addModalOpen && canAdministerFamily && (
           <div className="fixed inset-0 bg-ink/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
@@ -736,7 +867,7 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
                       className="w-full bg-sand/30 border border-sepia rounded-xl px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-gold text-sm text-ink"
                     >
                       {members.map(person => (
-                        <option key={person.id} value={person.id}>{person.name} ({person.id === 'm1' ? 'Me' : person.relationship})</option>
+                        <option key={person.id} value={person.id}>{person.name} ({person.id === currentUserMemberId ? 'Me' : person.relationship})</option>
                       ))}
                     </select>
                   </div>
@@ -746,7 +877,7 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
                     <label className="text-[10px] font-bold uppercase tracking-wider block">Type of Link (Lineage Connection)</label>
                     <select
                       value={formLinkType}
-                      onChange={(e) => setFormLinkType(e.target.value)}
+                      onChange={(e) => setFormLinkType(e.target.value as RelativeLinkType)}
                       className="w-full bg-sand/30 border border-sepia rounded-xl px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-gold text-sm text-ink"
                     >
                       <option value="Father">Father</option>
@@ -759,14 +890,15 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
                     </select>
                   </div>
 
-                  {(formLinkType === 'Son' || formLinkType === 'Daughter') && formSpouseOptions.length > 1 && (
+                  {(formLinkType === 'Son' || formLinkType === 'Daughter') && formSpouseOptions.length > 0 && (
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold uppercase tracking-wider block">Other Parent</label>
                       <select
-                        value={formCoParentId || formSpouseOptions[0].id}
+                        value={formCoParentId}
                         onChange={(e) => setFormCoParentId(e.target.value)}
                         className="w-full bg-sand/30 border border-sepia rounded-xl px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-gold text-sm text-ink"
                       >
+                        <option value="">No second parent selected</option>
                         {formSpouseOptions.map(spouse => (
                           <option key={spouse.id} value={spouse.id}>{spouse.name}</option>
                         ))}
@@ -797,17 +929,19 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
                     </div>
                   </div>
 
-                  {/* Branch & Notes */}
+                  {/* Approximate location & notes */}
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider block">Family Branch</label>
-                      <input 
-                        type="text"
-                        value={formBranch}
-                        onChange={(e) => setFormBranch(e.target.value)}
-                        placeholder="e.g. Elders, Main, Uncle Zayed Branch"
+                      <label className="text-[10px] font-bold uppercase tracking-wider block">Approximate Emirate</label>
+                      <select
+                        value={formEmirate}
+                        onChange={(e) => setFormEmirate(e.target.value)}
                         className="w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2 focus:outline-none text-xs"
-                      />
+                      >
+                        <option value="">Not provided</option>
+                        {['Abu Dhabi', 'Dubai', 'Sharjah', 'Ajman', 'Umm Al Quwain', 'Ras Al Khaimah', 'Fujairah'].map(emirate => <option key={emirate}>{emirate}</option>)}
+                      </select>
+                      <p className="text-[9px] text-ink/40 leading-snug">Admin-reported area; not device tracking.</p>
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold uppercase tracking-wider block">Primary Note</label>
@@ -821,26 +955,17 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
                     </div>
                   </div>
 
-                  {/* Memory */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider block">Heritage Memory (Family Story)</label>
-                    <textarea 
-                      value={formMemory}
-                      onChange={(e) => setFormMemory(e.target.value)}
-                      placeholder="e.g. Shares details of pearl trading routes in historical meetings."
-                      rows={2}
-                      className="w-full bg-sand/30 border border-sepia rounded-xl px-4 py-2 focus:outline-none text-xs resize-none"
-                    />
-                  </div>
+                  {mutationError && <p role="alert" className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">{mutationError}</p>}
                 </div>
 
                 {/* Footer */}
                 <div className="p-6 bg-sand border-t border-sepia flex gap-4">
                   <button 
                     type="submit"
-                    className="flex-1 bg-ink text-white py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest hover:bg-gold transition-colors text-center shadow"
+                    disabled={saving}
+                    className="flex-1 bg-ink text-white py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest hover:bg-gold transition-colors text-center shadow disabled:opacity-50 flex items-center justify-center gap-2"
                   >
-                    Add to Lineage
+                    {saving && <LoaderCircle size={14} className="animate-spin" />} Add to Lineage
                   </button>
                   <button 
                     type="button" 
@@ -879,7 +1004,7 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
                   <img src={selectedPerson.photo || createAnonymousAvatar(selectedPerson.id)} alt={selectedPerson.name} className="size-14 min-w-14 min-h-14 shrink-0 rounded-full object-cover overflow-hidden border border-sepia p-0.5 bg-white shadow-sm" />
                   <div>
                     <span className="text-[8px] uppercase tracking-widest text-gold font-bold">
-                      {selectedPerson.relationship === 'Me' ? 'Me (Admin)' : selectedPerson.relationship}
+                      {selectedPerson.id === currentUserMemberId ? `Me (${familyRole})` : selectedPerson.relationship}
                     </span>
                     <h3 className="font-serif text-xl text-ink font-bold italic leading-tight">{selectedPerson.name}</h3>
                     <p className="text-[9px] text-ink/40 font-bold uppercase tracking-wider">Branch: {selectedPerson.familyBranch || 'Main'}</p>
@@ -903,21 +1028,37 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
                   onAnonymous={() => updateSelectedPersonPhoto(createAnonymousAvatar(selectedPerson.id))}
                 />
 
-                {/* Details list */}
-                <div className="space-y-2">
-                  <div className="flex items-center gap-3 text-xs">
-                    <Calendar size={14} className="text-gold" />
-                    <span className="font-bold uppercase text-[9px] text-ink/40 tracking-wider">Birthday:</span>
-                    <span>{selectedPerson.birthday}</span>
+                {/* Persistent profile fields */}
+                {(canAdministerFamily || selectedPerson.id === currentUserMemberId) ? (
+                <div className="space-y-3">
+                  <label className="block text-[9px] font-bold uppercase tracking-wider text-ink/50">
+                    Full name
+                    <input required value={editName} onChange={event => setEditName(event.target.value)} className="mt-1 w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2.5 text-xs normal-case tracking-normal text-ink" />
+                  </label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block text-[9px] font-bold uppercase tracking-wider text-ink/50">
+                      <span className="flex items-center gap-1"><Calendar size={12} className="text-gold" /> Birthday</span>
+                      <input type="date" value={editBirthday} onChange={event => setEditBirthday(event.target.value)} className="mt-1 w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2.5 text-xs normal-case tracking-normal text-ink" />
+                    </label>
+                    <label className="block text-[9px] font-bold uppercase tracking-wider text-ink/50">
+                      <span className="flex items-center gap-1"><Phone size={12} className="text-gold" /> Phone</span>
+                      <input value={editPhone} onChange={event => setEditPhone(event.target.value)} className="mt-1 w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2.5 text-xs normal-case tracking-normal text-ink" placeholder="+971 50…" />
+                    </label>
                   </div>
-                  {selectedPerson.phone && (
-                    <div className="flex items-center gap-3 text-xs">
-                      <Phone size={14} className="text-gold" />
-                      <span className="font-bold uppercase text-[9px] text-ink/40 tracking-wider">Contact:</span>
-                      <span>{selectedPerson.phone}</span>
-                    </div>
-                  )}
+                  <label className="block text-[9px] font-bold uppercase tracking-wider text-ink/50">
+                    Email
+                    <input type="email" value={editEmail} onChange={event => setEditEmail(event.target.value)} className="mt-1 w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2.5 text-xs normal-case tracking-normal text-ink" placeholder="Optional" />
+                  </label>
+                  <label className="block text-[9px] font-bold uppercase tracking-wider text-ink/50">
+                    Notes
+                    <textarea rows={3} value={editNotes} onChange={event => setEditNotes(event.target.value)} className="mt-1 w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2.5 text-xs normal-case tracking-normal text-ink resize-none" placeholder="Family context or accessibility needs" />
+                  </label>
                 </div>
+                ) : (
+                  <p className="rounded-xl border border-sepia/50 bg-sand/30 p-4 text-xs text-ink/55">
+                    Private contact, birthday, and notes fields are visible only to that person and family administrators.
+                  </p>
+                )}
 
                 {/* Lineage Info */}
                 <div className="bg-sand/30 border border-sepia/50 p-4 rounded-xl space-y-2">
@@ -940,92 +1081,51 @@ export function FamilyTree({ members, setMembers }: FamilyTreeProps) {
                       {members.filter(p => selectedPerson.childrenIds?.includes(p.id)).map(p => p.name).join(', ')}
                     </p>
                   )}
+                  {selectedPerson.siblingIds && selectedPerson.siblingIds.length > 0 && (
+                    <p className="text-xs">
+                      <strong>Siblings: </strong>
+                      {members.filter(p => selectedPerson.siblingIds?.includes(p.id)).map(p => p.name).join(', ')}
+                    </p>
+                  )}
                 </div>
 
-                {/* Notes */}
-                {selectedPerson.notes && (
-                  <div className="space-y-1">
-                    <h4 className="text-[10px] font-bold uppercase tracking-wider text-ink/40">Notes</h4>
-                    <p className="font-serif italic text-ink/70 bg-sand/20 border-l-2 border-gold pl-3 py-1">{selectedPerson.notes}</p>
+                {selectedPerson.safeLocation && (
+                  <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl flex items-start gap-3">
+                    <ShieldCheck size={16} className="text-emerald-700 shrink-0" />
+                    <div>
+                      <h4 className="text-[9px] font-bold uppercase tracking-wider text-emerald-800">Privacy-filtered location</h4>
+                      <p className="text-xs text-emerald-800/75 mt-1">
+                        {selectedPerson.safeLocation.city || selectedPerson.safeLocation.emirate || selectedPerson.safeLocation.distanceBand || 'A location summary is available to authorized viewers.'}
+                      </p>
+                    </div>
                   </div>
                 )}
 
-                {/* Memories */}
-                <div className="space-y-3">
-                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-ink/40 flex items-center gap-1.5">
-                    <Sparkles size={12} className="text-gold" />
-                    Heritage Stories & Memories
-                  </h4>
-                  {selectedPerson.memories && selectedPerson.memories.length > 0 ? (
-                    <div className="space-y-2">
-                      {selectedPerson.memories.map((memory, index) => (
-                        <div key={index} className="bg-sand/30 p-4 rounded-xl border border-sepia/30 font-serif italic text-xs leading-relaxed">
-                          "{memory}"
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-center bg-sand/10 border border-sepia/30 py-6 rounded-xl">
-                      <p className="text-xs italic text-ink/40 font-serif">No stories recorded yet.</p>
-                      <button 
-                        type="button"
-                        onClick={() => {
-                          const story = prompt("Type a story or memory of this person to preserve:");
-                          if (story) {
-                            setMembers(prev => prev.map(person => {
-                              if (person.id === selectedPerson.id) {
-                                return {
-                                  ...person,
-                                  memories: [...(person.memories || []), story]
-                                };
-                              }
-                              return person;
-                            }));
-                            setSelectedPerson({
-                              ...selectedPerson,
-                              memories: [...(selectedPerson.memories || []), story]
-                            });
-                          }
-                        }}
-                        className="text-[9px] font-bold text-gold uppercase mt-2 hover:underline"
-                      >
-                        + Write First Story
-                      </button>
-                    </div>
-                  )}
+                <div className="bg-sand/20 border border-sepia/50 p-4 rounded-xl">
+                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-ink/40 flex items-center gap-1.5"><Sparkles size={12} className="text-gold" /> Memories</h4>
+                  <p className="text-xs text-ink/50 mt-2">Family memories are saved with explicit privacy controls in the Archive and attached to persisted gatherings.</p>
                 </div>
+
+                {mutationError && <p role="alert" className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">{mutationError}</p>}
               </div>
 
               {/* Footer */}
               <div className="p-6 bg-sand border-t border-sepia flex gap-3">
-                <button 
-                  type="button"
-                  onClick={() => {
-                    const story = prompt("Type a family story, heritage fact, or memory of this relative to preserve in lineage logs:");
-                    if (story) {
-                      setMembers(prev => prev.map(person => {
-                        if (person.id === selectedPerson.id) {
-                          return {
-                            ...person,
-                            memories: [...(person.memories || []), story]
-                          };
-                        }
-                        return person;
-                      }));
-                      setSelectedPerson({
-                        ...selectedPerson,
-                        memories: [...(selectedPerson.memories || []), story]
-                      });
-                    }
-                  }}
-                  className="flex-1 bg-ink text-white py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest hover:bg-gold transition-colors text-center shadow"
-                >
-                  Preserve Story
-                </button>
-                {selectedPerson.id !== 'm1' && (
+                {(canAdministerFamily || selectedPerson.id === currentUserMemberId) && (
+                  <button
+                    type="button"
+                    onClick={handleSaveProfile}
+                    disabled={saving || !editName.trim()}
+                    className="flex-1 bg-ink text-white py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest hover:bg-gold transition-colors text-center shadow disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {saving ? <LoaderCircle size={14} className="animate-spin" /> : <Save size={14} />} Save
+                  </button>
+                )}
+                {canAdministerFamily && selectedPerson.id !== currentUserMemberId && (
                   <button 
                     type="button"
                     onClick={() => handleRemoveMember(selectedPerson.id)}
+                    disabled={saving}
                     className="bg-red-50 text-red-600 border border-red-200 p-3 rounded-xl text-[10px] font-bold uppercase tracking-widest hover:bg-red-100 transition-all flex items-center justify-center gap-1.5"
                   >
                     <Trash2 size={14} /> Remove

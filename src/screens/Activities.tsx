@@ -1,496 +1,147 @@
-import React, { useState } from 'react';
-import { mockActivities } from '../mockData';
-import { MapPin, Clock, Filter, Search, ChevronRight, Star, X, Calendar, Sparkles, BookOpen, Sun } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import { cn } from '../lib/utils';
-import { FamilyMember } from '../types';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Accessibility,
+  AlertCircle,
+  Clock,
+  Filter,
+  LoaderCircle,
+  MapPin,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Sparkles,
+} from 'lucide-react';
+import { ApiError, apiRequest } from '../api/client';
+import type { ActivityListing } from '../engagementTypes';
+import type { FamilyMember } from '../types';
 
 interface ActivitiesProps {
   members: FamilyMember[];
+  onPlanActivity: (activity: ActivityListing) => void;
 }
 
-export function Activities({ members }: ActivitiesProps) {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedEmirate, setSelectedEmirate] = useState('All');
-  const [selectedCategory, setSelectedCategory] = useState('All');
-  const [itineraryModalOpen, setItineraryModalOpen] = useState(false);
+export function Activities({ members, onPlanActivity }: ActivitiesProps) {
+  const [activities, setActivities] = useState<ActivityListing[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const [emirate, setEmirate] = useState('All');
+  const [category, setCategory] = useState('All');
+  const [price, setPrice] = useState('All');
+  const [elderFriendly, setElderFriendly] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
-  // Form states for custom itinerary
-  const [itinEmirate, setItinEmirate] = useState('Abu Dhabi');
-  const [itinDuration, setItinDuration] = useState('Weekend (2 Days)');
-  const [itinProfile, setItinProfile] = useState('Extended Family (with Kids & Elders)');
-  const [generatedPlan, setGeneratedPlan] = useState<any>(null);
-
-  const emirates = ['All', 'Dubai', 'Abu Dhabi', 'Sharjah', 'Fujairah'];
-  const categories = [
-    { name: 'Heritage', icon: '🕌' },
-    { name: 'Beach', icon: '🏖️' },
-    { name: 'Parks', icon: '🌳' },
-    { name: 'Museums', icon: '🏛️' }
-  ];
-
-  // Real-time filtering logic
-  const filteredActivities = mockActivities.filter(activity => {
-    const matchesSearch = activity.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          activity.description.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          activity.location.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesEmirate = selectedEmirate === 'All' || activity.emirate === selectedEmirate;
-    const matchesCategory = selectedCategory === 'All' || activity.category === selectedCategory;
-    return matchesSearch && matchesEmirate && matchesCategory;
-  });
-
-  // Simulated AI itinerary planner engine
-  const handleGenerateItinerary = () => {
-    // Generate beautiful day-by-day itineraries
-    if (itinEmirate === 'Abu Dhabi') {
-      setGeneratedPlan({
-        title: `Al Mansouri Family ${itinDuration} in Abu Dhabi`,
-        subtitle: `Custom plan optimized for: ${itinProfile}`,
-        days: [
-          {
-            dayNumber: "Day 1: Cultural Grandeur",
-            stops: [
-              {
-                time: "09:30 AM - 12:30 PM",
-                title: "Louvre Abu Dhabi Museum Tour",
-                description: "Wheelchair accessible paths under the stunning geometric dome. Special sensory guides for children.",
-                landmark: "Saadiyat Island",
-                type: "Indoor / Cultural",
-                accessibility: "Elderly & Stroller Friendly"
-              },
-              {
-                time: "01:00 PM - 03:00 PM",
-                title: "Family Lunch at Saadiyat Beach Club",
-                description: "Overlooking clear waters, relaxing breeze, traditional Arabic seafood menu.",
-                landmark: "Saadiyat Beach",
-                type: "Dining",
-                accessibility: "Accessible seating"
-              },
-              {
-                time: "04:00 PM - 06:30 PM",
-                title: "Qasr Al Watan Palace Exploration",
-                description: "Explore the breathtaking halls of the Presidential Palace. Extremely comfortable walking paths and indoor climate control.",
-                landmark: "Al Ras Al Akhdar",
-                type: "Indoor / Architecture",
-                accessibility: "Fully accessible, shuttle buses available"
-              }
-            ]
-          },
-          {
-            dayNumber: "Day 2: Heritage & Nature",
-            stops: [
-              {
-                time: "10:00 AM - 12:30 PM",
-                title: "Abu Dhabi Falcon Hospital",
-                description: "Guided tour to see the majestic birds up close. Learn the history of falconry from old eras. Kids can hold falcons.",
-                landmark: "Al Shamkha Area",
-                type: "Wildlife / Education",
-                accessibility: "Gentle walking pace"
-              },
-              {
-                time: "01:30 PM - 04:30 PM",
-                title: "Al Mushrif Family Park Picnic",
-                description: "Relax in the shade of native Ghaf trees. Playground spaces for kids and peaceful walking trails for grandparents.",
-                landmark: "Mushrif District",
-                type: "Outdoor / Relaxation",
-                accessibility: "Benches and paved paths"
-              }
-            ]
-          }
-        ]
+  useEffect(() => {
+    let current = true;
+    setLoading(true);
+    setError('');
+    apiRequest<{ activities: ActivityListing[] }>('/api/activities')
+      .then(result => {
+        if (current) setActivities(result.activities);
+      })
+      .catch(caught => {
+        if (current) setError(caught instanceof ApiError ? caught.message : 'The activity catalog could not load.');
+      })
+      .finally(() => {
+        if (current) setLoading(false);
       });
-    } else {
-      // Dubai Itinerary
-      setGeneratedPlan({
-        title: `Al Mansouri Family ${itinDuration} in Dubai`,
-        subtitle: `Custom plan optimized for: ${itinProfile}`,
-        days: [
-          {
-            dayNumber: "Day 1: History & Beach Bonding",
-            stops: [
-              {
-                time: "10:00 AM - 01:00 PM",
-                title: "Al Shindagha Historical Museum",
-                description: "Excellent multi-sensory perfume house and history exhibits detailing Creek life. Indoor air-conditioned rooms.",
-                landmark: "Dubai Creek Side",
-                type: "Indoor / History",
-                accessibility: "Elevators & resting points throughout"
-              },
-              {
-                time: "03:30 PM - 08:30 PM",
-                title: "Al Mamzar Beach Park Private Chalet",
-                description: "Barbecue dinner and swimming. The rented air-conditioned chalet provides absolute comfort for grandparents to resting while children play by the beach.",
-                landmark: "Al Mamzar Coast",
-                type: "Beach / BBQ",
-                accessibility: "Air-conditioned resting rooms and private toilets"
-              }
-            ]
-          },
-          {
-            dayNumber: "Day 2: Desert Oasis & Wildlife",
-            stops: [
-              {
-                time: "07:00 AM - 10:30 AM",
-                title: "Al Qudra Desert Lakes Picnic",
-                description: "Watch local desert gazelles and rare migratory birds. Early morning breeze avoids midday sun.",
-                landmark: "Al Marmoom Reserve",
-                type: "Desert / Outdoors",
-                accessibility: "Drive-up viewing spots available"
-              },
-              {
-                time: "04:30 PM - 07:00 PM",
-                title: "Traditional Majlis Tea & Astronomy",
-                description: "Gather under a Bedouin tent to drink gahwa, eat dates, and look at stars using telescope devices.",
-                landmark: "Bab Al Shams Desert Area",
-                type: "Cultural / Stargazing",
-                accessibility: "Plush traditional seating"
-              }
-            ]
-          }
-        ]
-      });
-    }
-  };
+    return () => {
+      current = false;
+    };
+  }, [reloadKey]);
+
+  const emirates = useMemo(() => ['All', ...new Set(activities.map(item => item.emirate))], [activities]);
+  const categories = useMemo(() => ['All', ...new Set(activities.map(item => item.category))], [activities]);
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return activities.filter(activity => (
+      (!query || [activity.title, activity.description, activity.location, activity.category]
+        .some(value => value.toLowerCase().includes(query)))
+      && (emirate === 'All' || activity.emirate === emirate)
+      && (category === 'All' || activity.category === category)
+      && (price === 'All' || activity.priceRange === price)
+      && (!elderFriendly || activity.elderlyFriendly)
+    ));
+  }, [activities, category, elderFriendly, emirate, price, search]);
 
   return (
-    <div className="space-y-8">
-      {/* Search and Quick Filters */}
-      <div className="flex gap-4 items-center">
-        <div className="relative group flex-1">
-          <input 
-            type="text" 
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search family experiences in UAE..."
-            className="w-full bg-white border border-sepia rounded-2xl px-12 py-4 text-sm focus:outline-none shadow-sm focus:ring-1 focus:ring-gold transition-all"
-          />
-          <Search className="absolute left-4 top-4.5 text-ink/20 group-focus-within:text-gold transition-colors" size={18} />
-          {searchQuery && (
-            <button onClick={() => setSearchQuery('')} className="absolute right-4 top-4.5 text-ink/40 hover:text-gold">
-              <X size={16} />
-            </button>
-          )}
-        </div>
-        <button 
-          onClick={() => setItineraryModalOpen(true)}
-          className="bg-gold text-white px-5 py-4 rounded-2xl shadow-lg hover:bg-ink transition-colors flex items-center gap-2 text-xs font-bold uppercase tracking-widest"
-        >
-          <Sparkles size={16} /> Plan AI Itinerary
-        </button>
-      </div>
+    <div className="space-y-7">
+      <section className="rounded-[2rem] border border-sepia bg-ink p-7 text-white shadow-lg">
+        <p className="flex items-center gap-2 text-[9px] font-bold uppercase tracking-[0.3em] text-gold"><ShieldCheck size={14} /> Curated catalog with provenance</p>
+        <h3 className="mt-3 font-serif text-2xl italic">Choose a starting point for family time.</h3>
+        <p className="mt-2 max-w-xl text-xs leading-relaxed text-white/55">
+          Every prototype row is labelled. The app does not claim live availability, pricing, accessibility, ratings, or a partner relationship.
+        </p>
+      </section>
 
-      {/* Emirate Selector */}
-      <div className="space-y-2">
-        <p className="text-[9px] font-bold text-ink/40 uppercase tracking-[0.3em] pl-1">Select Emirate</p>
-        <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-hide">
-          {emirates.map(e => (
-            <button
-              key={e}
-              onClick={() => setSelectedEmirate(e)}
-              className={cn(
-                "px-5 py-2.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all shrink-0",
-                selectedEmirate === e 
-                  ? "bg-ink text-white shadow-lg scale-105" 
-                  : "bg-white text-ink/40 border border-sepia hover:text-ink/60 hover:border-gold"
-              )}
-            >
-              {e}
-            </button>
-          ))}
+      <section className="space-y-4 rounded-[2rem] border border-sepia bg-white p-5 shadow-sm">
+        <div className="relative">
+          <Search className="absolute left-4 top-3.5 text-ink/30" size={17} />
+          <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search the catalog" className="w-full rounded-xl border border-sepia bg-sand/25 py-3 pl-11 pr-4 text-sm outline-none focus:border-gold" />
         </div>
-      </div>
-
-      {/* Small Category Grid */}
-      <section className="space-y-3">
-        <div className="flex justify-between items-center pl-1">
-          <p className="text-[9px] font-bold text-ink/40 uppercase tracking-[0.3em]">Quick Categories</p>
-          {selectedCategory !== 'All' && (
-            <button 
-              onClick={() => setSelectedCategory('All')} 
-              className="text-[9px] text-gold font-bold uppercase tracking-wider hover:underline"
-            >
-              Clear Category Filter
-            </button>
-          )}
-        </div>
-        <div className="grid grid-cols-4 gap-4">
-          {categories.map(cat => (
-            <div 
-              key={cat.name} 
-              onClick={() => setSelectedCategory(cat.name)}
-              className={cn(
-                "p-4 rounded-2xl border transition-all cursor-pointer text-center flex flex-col items-center gap-2 shadow-sm",
-                selectedCategory === cat.name 
-                  ? "bg-ink text-white border-ink scale-105 shadow-md" 
-                  : "bg-white border-sepia hover:border-gold hover:bg-sand/30"
-              )}
-            >
-              <span className="text-2xl">{cat.icon}</span>
-              <span className="text-[9px] font-bold uppercase tracking-wider truncate w-full">{cat.name}</span>
-            </div>
-          ))}
+        <div className="grid gap-3 sm:grid-cols-4">
+          <label className="text-[9px] font-bold uppercase tracking-wider text-ink/45">Emirate<select value={emirate} onChange={event => setEmirate(event.target.value)} className="mt-1 block w-full rounded-xl border border-sepia bg-white px-3 py-2.5 text-xs normal-case text-ink">{emirates.map(value => <option key={value}>{value}</option>)}</select></label>
+          <label className="text-[9px] font-bold uppercase tracking-wider text-ink/45">Category<select value={category} onChange={event => setCategory(event.target.value)} className="mt-1 block w-full rounded-xl border border-sepia bg-white px-3 py-2.5 text-xs normal-case text-ink">{categories.map(value => <option key={value}>{value}</option>)}</select></label>
+          <label className="text-[9px] font-bold uppercase tracking-wider text-ink/45">Budget<select value={price} onChange={event => setPrice(event.target.value)} className="mt-1 block w-full rounded-xl border border-sepia bg-white px-3 py-2.5 text-xs normal-case text-ink">{['All', 'Free', 'Budget', 'Premium'].map(value => <option key={value}>{value}</option>)}</select></label>
+          <label className="flex items-center gap-2 self-end rounded-xl border border-sepia px-3 py-2.5 text-xs text-ink/60"><input type="checkbox" checked={elderFriendly} onChange={event => setElderFriendly(event.target.checked)} className="accent-gold" /> Elder-friendly note</label>
         </div>
       </section>
 
-      {/* Activities List */}
-      <section className="space-y-6">
-        <div className="flex justify-between items-baseline mb-2">
-          <h3 className="font-serif text-2xl italic text-ink">
-            {selectedCategory !== 'All' ? `${selectedCategory} in ` : 'Popular in '} 
-            {selectedEmirate === 'All' ? 'UAE' : selectedEmirate}
-          </h3>
-          <span className="text-[9px] font-bold text-ink/40 uppercase tracking-wider">{filteredActivities.length} places found</span>
+      {error && (
+        <div role="alert" className="flex items-start justify-between gap-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-xs text-red-700">
+          <span className="flex items-start gap-2"><AlertCircle className="mt-0.5 shrink-0" size={15} /> {error} No activity data was substituted.</span>
+          <button type="button" onClick={() => setReloadKey(value => value + 1)} className="flex shrink-0 items-center gap-1 font-bold uppercase tracking-wider"><RefreshCw size={13} /> Retry</button>
         </div>
-        
-        {filteredActivities.length > 0 ? (
-          <div className="grid gap-8">
-            {filteredActivities.map(activity => (
-              <motion.div
-                layout
-                initial={{ opacity: 0, y: 15 }}
-                animate={{ opacity: 1, y: 0 }}
-                key={activity.id}
-                className="bg-white rounded-[2rem] overflow-hidden border border-sepia shadow-sm group hover:shadow-xl hover:border-gold transition-all duration-300"
-              >
-                <div className="relative h-60 overflow-hidden">
-                  <img src={activity.image} alt={activity.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" />
-                  <div className="absolute top-4 left-4 bg-white/95 backdrop-blur px-3 py-1.5 rounded-xl text-[9px] font-bold text-ink uppercase tracking-widest flex items-center gap-1.5 shadow-sm border border-sepia/20">
-                    <Star size={11} className="text-gold fill-current" />
-                    Family Choice
-                  </div>
-                  {activity.elderlyFriendly && (
-                    <div className="absolute top-4 right-4 bg-ink/80 backdrop-blur px-3 py-1.5 rounded-xl text-[9px] font-bold text-white uppercase tracking-widest shadow-sm">
-                      Elderly Accessible
-                    </div>
-                  )}
-                </div>
-                <div className="p-8">
-                  <div className="flex justify-between items-start mb-4">
+      )}
+
+      {loading ? (
+        <div className="flex min-h-52 items-center justify-center gap-2 rounded-[2rem] border border-sepia bg-white text-sm text-ink/45"><LoaderCircle className="animate-spin text-gold" size={20} /> Loading catalog…</div>
+      ) : filtered.length === 0 ? (
+        <div className="rounded-[2rem] border border-dashed border-sepia bg-white/60 p-10 text-center">
+          <Filter className="mx-auto text-gold" size={25} />
+          <p className="mt-3 font-serif italic text-ink/50">No catalog rows match these filters.</p>
+        </div>
+      ) : (
+        <section className="grid gap-5">
+          {filtered.map(activity => (
+            <article key={activity.id} className="overflow-hidden rounded-[2rem] border border-sepia bg-white shadow-sm">
+              <div className="grid sm:grid-cols-[12rem_1fr]">
+                {activity.image ? (
+                  <img src={activity.image} alt="" className="h-48 w-full object-cover sm:h-full" />
+                ) : (
+                  <div className="flex min-h-40 items-center justify-center bg-gradient-to-br from-ink to-gold/80 text-white/70"><MapPin size={40} strokeWidth={1.2} /></div>
+                )}
+                <div className="p-6">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <span className="text-[9px] font-bold text-gold uppercase tracking-wider block mb-1">{activity.category}</span>
-                      <h4 className="font-serif text-2xl text-ink leading-tight font-bold group-hover:text-gold transition-colors">{activity.title}</h4>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-gold">{activity.category} · {activity.isSample ? 'Prototype sample' : 'Verified listing'}</p>
+                      <h3 className="mt-1 font-serif text-xl font-bold italic text-ink">{activity.title}</h3>
                     </div>
-                    <div className="text-[10px] font-bold text-gold bg-gold/5 px-3 py-1.5 rounded-full uppercase tracking-widest border border-gold/10">
-                      {activity.priceRange}
-                    </div>
+                    <span className="rounded-full bg-sand px-3 py-1 text-[9px] font-bold uppercase tracking-wider text-ink/50">{activity.priceRange}</span>
                   </div>
-                  <p className="text-sm text-ink/60 mb-6 leading-relaxed font-serif italic">{activity.description}</p>
-                  
-                  <div className="flex flex-wrap gap-x-6 gap-y-3 mb-6 border-t border-sepia/30 pt-6">
-                    <div className="flex items-center gap-2 text-ink/50 text-[10px] font-bold uppercase tracking-wider">
-                      <MapPin size={14} className="text-gold" />
-                      <span>{activity.location}, {activity.emirate}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-ink/50 text-[10px] font-bold uppercase tracking-wider">
-                      <Clock size={14} className="text-gold" />
-                      <span>{activity.estimatedDuration}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-ink/50 text-[10px] font-bold uppercase tracking-wider">
-                      <Sun size={14} className="text-gold" />
-                      <span>{activity.weatherSuitability}</span>
-                    </div>
+                  <p className="mt-3 text-xs leading-relaxed text-ink/60">{activity.description}</p>
+                  <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-[9px] font-bold uppercase tracking-wider text-ink/45">
+                    <span className="flex items-center gap-1.5"><MapPin size={12} className="text-gold" /> {activity.location}, {activity.emirate}</span>
+                    <span className="flex items-center gap-1.5"><Clock size={12} className="text-gold" /> {activity.estimatedDuration}</span>
+                    {activity.elderlyFriendly && <span className="flex items-center gap-1.5"><Accessibility size={12} className="text-gold" /> Sample suitability flag</span>}
                   </div>
-                  <div className="flex items-center justify-between border-t border-sepia/30 pt-6">
-                     <span className="text-[9px] text-ink/40 font-bold uppercase tracking-widest">Ages: {activity.ageSuitability}</span>
-                     <button 
-                       onClick={() => {
-                         alert(`Experience details: "${activity.title}" is located at ${activity.location}. You can coordinate an invitation for this experience inside the Gatherings/Calendar tab.`);
-                       }}
-                       className="text-ink font-bold text-[10px] uppercase tracking-widest flex items-center gap-2 group-hover:gap-3 transition-all hover:text-gold"
-                     >
-                        Learn More <ChevronRight size={14} className="text-gold" />
-                     </button>
+                  <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-sepia/60 pt-4">
+                    <div>
+                      <p className="text-[9px] text-ink/40">{activity.sourceLabel}</p>
+                      {activity.verifiedAt && <p className="mt-1 text-[8px] text-ink/30">Verified {new Date(activity.verifiedAt).toLocaleDateString()}</p>}
+                    </div>
+                    <button type="button" onClick={() => onPlanActivity(activity)} className="flex items-center gap-2 rounded-xl bg-ink px-4 py-3 text-[9px] font-bold uppercase tracking-widest text-white hover:bg-gold"><Sparkles size={13} /> Ask agent to plan</button>
                   </div>
                 </div>
-              </motion.div>
-            ))}
-          </div>
-        ) : (
-          <div className="bg-white/50 border border-sepia border-dashed p-16 rounded-[2rem] text-center">
-            <p className="font-serif text-lg italic text-ink/40">No activities match your filters.</p>
-            <button 
-              onClick={() => { setSelectedEmirate('All'); setSelectedCategory('All'); setSearchQuery(''); }}
-              className="text-gold text-[10px] uppercase font-bold tracking-widest mt-4 hover:underline"
-            >
-              Reset Filters
-            </button>
-          </div>
-        )}
-      </section>
-
-      {/* Itinerary Planner Modal */}
-      <AnimatePresence>
-        {itineraryModalOpen && (
-          <div className="fixed inset-0 bg-ink/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white w-full max-w-2xl rounded-[2.5rem] border border-sepia overflow-hidden shadow-2xl flex flex-col max-h-[85vh]"
-            >
-              {/* Header */}
-              <div className="bg-sand p-8 flex justify-between items-center border-b border-sepia">
-                <div className="flex items-center gap-3">
-                  <Sparkles size={20} className="text-gold" />
-                  <h3 className="font-serif text-2xl text-ink font-bold italic">AI Family Itinerary Planner</h3>
-                </div>
-                <button 
-                  onClick={() => { setItineraryModalOpen(false); setGeneratedPlan(null); }}
-                  className="p-2 rounded-full hover:bg-sepia/20 transition-colors"
-                >
-                  <X size={20} className="text-ink/60" />
-                </button>
               </div>
+            </article>
+          ))}
+        </section>
+      )}
 
-              {/* Modal Body */}
-              <div className="flex-1 overflow-y-auto p-8 space-y-6 custom-scrollbar">
-                {!generatedPlan ? (
-                  // Selection Form
-                  <div className="space-y-6">
-                    <p className="text-sm text-ink/60 font-serif italic">
-                      Generate a detailed, culturally rich itinerary for your family weekend, taking into account wheelchair accessibility, prayer schedule windows, and child activities in the UAE.
-                    </p>
-                    
-                    {/* Select Emirate */}
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-ink uppercase tracking-wider block">Target Destination</label>
-                      <div className="grid grid-cols-2 gap-4">
-                        {['Abu Dhabi', 'Dubai'].map(dest => (
-                          <button
-                            key={dest}
-                            type="button"
-                            onClick={() => setItinEmirate(dest)}
-                            className={cn(
-                              "py-3 rounded-xl border text-[11px] font-bold uppercase tracking-wider transition-all",
-                              itinEmirate === dest ? "bg-ink text-white border-ink shadow-sm" : "bg-white border-sepia text-ink/60 hover:border-gold"
-                            )}
-                          >
-                            {dest}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Duration */}
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-ink uppercase tracking-wider block">Duration</label>
-                      <div className="grid grid-cols-2 gap-4">
-                        {['1 Day Plan', 'Weekend (2 Days)'].map(dur => (
-                          <button
-                            key={dur}
-                            type="button"
-                            onClick={() => setItinDuration(dur)}
-                            className={cn(
-                              "py-3 rounded-xl border text-[11px] font-bold uppercase tracking-wider transition-all",
-                              itinDuration === dur ? "bg-ink text-white border-ink shadow-sm" : "bg-white border-sepia text-ink/60 hover:border-gold"
-                            )}
-                          >
-                            {dur}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Participant Profile */}
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-ink uppercase tracking-wider block">Family Group Profile</label>
-                      <div className="space-y-2">
-                        {[
-                          'Extended Family (with Kids & Elders)',
-                          'Young Family (Parents & Kids only)',
-                          'Elders Centered (Focus on walking ease & shade)'
-                        ].map(prof => (
-                          <button
-                            key={prof}
-                            type="button"
-                            onClick={() => setItinProfile(prof)}
-                            className={cn(
-                              "w-full py-3.5 px-5 rounded-xl border text-[10px] font-bold uppercase tracking-wider text-left transition-all block",
-                              itinProfile === prof ? "bg-ink text-white border-ink shadow-sm" : "bg-white border-sepia text-ink/60 hover:border-gold"
-                            )}
-                          >
-                            {prof}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={handleGenerateItinerary}
-                      className="w-full bg-gold text-white py-4 rounded-2xl text-[10px] font-bold uppercase tracking-widest hover:bg-ink transition-colors shadow-lg mt-6"
-                    >
-                      Generate Custom Plan
-                    </button>
-                  </div>
-                ) : (
-                  // Plan Display
-                  <div className="space-y-6">
-                    <div className="border-b border-sepia pb-4">
-                      <h4 className="font-serif text-xl font-bold italic text-gold">{generatedPlan.title}</h4>
-                      <p className="text-[10px] text-ink/40 uppercase tracking-widest font-bold mt-1">{generatedPlan.subtitle}</p>
-                    </div>
-
-                    <div className="space-y-8">
-                      {generatedPlan.days.map((day: any, dIdx: number) => (
-                        <div key={dIdx} className="space-y-4">
-                          <h5 className="font-serif text-lg italic text-ink font-bold border-l-4 border-gold pl-3">{day.dayNumber}</h5>
-                          <div className="space-y-4">
-                            {day.stops.map((stop: any, sIdx: number) => (
-                              <div key={sIdx} className="bg-sand/30 border border-sepia/50 p-6 rounded-2xl space-y-3">
-                                <div className="flex justify-between items-start">
-                                  <span className="text-[9px] font-bold text-gold uppercase tracking-wider">{stop.time}</span>
-                                  <span className="text-[8px] bg-ink/5 border border-sepia text-ink/40 px-2 py-0.5 rounded font-bold uppercase">{stop.type}</span>
-                                </div>
-                                <h6 className="font-serif text-md font-bold text-ink">{stop.title}</h6>
-                                <p className="text-xs text-ink/60 font-serif italic">{stop.description}</p>
-                                <div className="flex justify-between items-center text-[9px] font-bold uppercase tracking-wider text-ink/40 pt-2 border-t border-sepia/20">
-                                  <span>📍 {stop.landmark}</span>
-                                  <span className="text-gold">♿ {stop.accessibility}</span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Footer */}
-              <div className="p-8 bg-sand border-t border-sepia flex gap-4">
-                {generatedPlan ? (
-                  <>
-                    <button 
-                      onClick={() => {
-                        alert(`Itinerary successfully saved to gatherings! You will now find the scheduled items inside your Family Calendar.`);
-                        setItineraryModalOpen(false);
-                        setGeneratedPlan(null);
-                      }}
-                      className="flex-1 bg-ink text-white py-3.5 rounded-2xl text-[10px] font-bold uppercase tracking-widest hover:bg-gold transition-colors text-center shadow-lg"
-                    >
-                      Export to Family Calendar
-                    </button>
-                    <button 
-                      onClick={() => setGeneratedPlan(null)}
-                      className="px-6 bg-white border border-sepia text-ink/60 py-3.5 rounded-2xl text-[10px] font-bold uppercase tracking-widest hover:text-ink hover:border-gold transition-all"
-                    >
-                      Back
-                    </button>
-                  </>
-                ) : (
-                  <button 
-                    onClick={() => setItineraryModalOpen(false)}
-                    className="w-full bg-white border border-sepia text-ink/60 py-3.5 rounded-2xl text-[10px] font-bold uppercase tracking-widest hover:text-ink hover:border-gold transition-all"
-                  >
-                    Cancel
-                  </button>
-                )}
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      <p className="text-center text-[9px] leading-relaxed text-ink/35">
+        {members.length} family member{members.length === 1 ? '' : 's'} in the current Bond Map. Tell the agent your budget, timing, accessibility needs, and invitee preferences when requesting a reconnection plan.
+      </p>
     </div>
   );
 }

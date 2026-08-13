@@ -1,297 +1,608 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Send, User, Bot, Sparkles, AlertCircle } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { useEffect, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  ArrowRight,
+  Bot,
+  Check,
+  LoaderCircle,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  X,
+} from 'lucide-react';
+import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
-import { FamilyMember } from '../types';
+import { ApiError, apiRequest } from '../api/client';
+import { ReconnectionPlansPanel } from '../components/ReconnectionPlansPanel';
+import { PreparedInvitationLinks } from '../components/PreparedInvitationLinks';
+import type { GatheringPlanPrefill } from '../api/reconnectionPlans';
+import {
+  agentWelcomeText,
+  agentDataDisclosureText,
+  buildDestructiveAgentConfirmation,
+  canRoleConfirmAgentAction,
+  formatAgentDetail,
+  getAgentActionResources,
+  getAgentConfirmButtonLabel,
+  getAgentQuickPrompts,
+  getAgentResultDestinationLabel,
+  getAgentRoleNotice,
+  humanizeAgentLabel,
+  invitationLinksUnavailableMessage,
+  isDestructiveAgentAction,
+  type AgentResource,
+} from '../lib/agentPresentation';
+import {
+  extractEphemeralInvitationLinks,
+  type EphemeralInvitationLinks,
+} from '../lib/agentInvitationLinks';
+import type { FamilyMember, FamilyRole } from '../types';
+
+export interface AgentActionCompletion {
+  actionType: string;
+  resources: AgentResource[];
+}
 
 interface AssistantProps {
   presetInput: string;
   clearPreset: () => void;
+  familyId?: string;
   members: FamilyMember[];
+  familyRole?: FamilyRole;
+  isActive?: boolean;
+  onActionCompleted?: (completion: AgentActionCompletion) => Promise<void> | void;
+  onNavigateToActionResult?: (actionType: string) => void;
+  onUseReconnectionPlan: (prefill: GatheringPlanPrefill) => void;
 }
 
-interface Message {
+interface ActionProposal {
+  id: string;
+  actionType: string;
+  title: string;
+  summary: string;
+  details?: Record<string, unknown>;
+  warnings?: string[];
+}
+
+interface AgentMessage {
   id: string;
   role: 'user' | 'assistant';
   text: string;
+  proposal?: ActionProposal;
+  proposalStatus?: 'pending' | 'confirmed' | 'rejected';
+  completedActionType?: string;
 }
 
-export function Assistant({ presetInput, clearPreset, members }: AssistantProps) {
-  const [messages, setMessages] = useState<Message[]>([
-    { id: '1', role: 'assistant', text: "Marhaba! I am your UAE Family Companion. I can adapt my role depending on your needs. How can I support your family today?" }
-  ]);
+interface AgentResponse {
+  sessionId: string;
+  kind: 'message' | 'clarification' | 'proposal';
+  message: string;
+  proposal?: ActionProposal;
+}
+
+interface AgentProposalResolutionResponse {
+  message?: string;
+  result?: unknown;
+  alreadyCompleted?: boolean;
+}
+
+interface AgentErrorNotice {
+  phase: 'request' | 'confirmation' | 'refresh' | 'conversation';
+  outcome: 'unchanged' | 'unknown' | 'completed';
+  title: string;
+  message: string;
+  consequence: string;
+}
+
+function requestErrorMessage(caught: unknown, fallback: string): string {
+  return caught instanceof ApiError || caught instanceof Error ? caught.message : fallback;
+}
+
+function proposalResolutionError(caught: unknown, decision: 'confirm' | 'reject'): AgentErrorNotice {
+  const message = requestErrorMessage(caught, 'The proposal could not be updated.');
+  if (decision === 'reject') {
+    return {
+      phase: 'confirmation',
+      outcome: 'unchanged',
+      title: 'Cancellation could not be verified',
+      message,
+      consequence: 'No family change was requested, but this proposal may still be pending. Leave it unchanged until the server is reachable.',
+    };
+  }
+
+  const outcomeUnknown = !(caught instanceof ApiError) || caught.status === 0 || caught.status >= 500;
+  return outcomeUnknown
+    ? {
+        phase: 'confirmation',
+        outcome: 'unknown',
+        title: 'Confirmation outcome is unknown',
+        message,
+        consequence: 'The server may have completed this action. Check the relevant app screen, or use the dedicated status-check button below; it reads the idempotent confirmation result instead of proposing a new action.',
+      }
+    : {
+        phase: 'confirmation',
+        outcome: 'unchanged',
+        title: 'Confirmation was rejected',
+        message,
+        consequence: 'The server rejected this confirmation, so no family data was changed by this attempt.',
+      };
+}
+
+const welcomeMessage: AgentMessage = {
+  id: 'welcome',
+  role: 'assistant',
+  text: agentWelcomeText,
+};
+
+export function Assistant({
+  presetInput,
+  clearPreset,
+  familyId,
+  members,
+  familyRole = 'member',
+  isActive = true,
+  onActionCompleted,
+  onNavigateToActionResult,
+  onUseReconnectionPlan,
+}: AssistantProps) {
+  const [messages, setMessages] = useState<AgentMessage[]>([welcomeMessage]);
   const [input, setInput] = useState('');
+  const [sessionId, setSessionId] = useState<string>();
   const [isLoading, setIsLoading] = useState(false);
-  const [mode, setMode] = useState('Family Advisor');
-  const [apiWarning, setApiWarning] = useState(false);
+  const [activeProposalId, setActiveProposalId] = useState<string>();
+  const [uncertainProposalIds, setUncertainProposalIds] = useState<Set<string>>(() => new Set());
+  const [error, setError] = useState<AgentErrorNotice>();
+  const [planRefreshVersion, setPlanRefreshVersion] = useState(0);
+  const [aiProcessingConsent, setAiProcessingConsent] = useState(false);
+  const [ephemeralInvitationLinks, setEphemeralInvitationLinks] = useState<EphemeralInvitationLinks>();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const quickPrompts = getAgentQuickPrompts(familyRole);
+  const roleNotice = getAgentRoleNotice(familyRole);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
-  useEffect(scrollToBottom, [messages]);
-
-  // Handle incoming presets
   useEffect(() => {
-    if (presetInput) {
-      setInput(presetInput);
-      clearPreset();
-      // Auto-submit after a slight delay to allow rendering
-      const timer = setTimeout(() => {
-        handleSend(presetInput);
-      }, 300);
-      return () => clearTimeout(timer);
-    }
-  }, [presetInput]);
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, isLoading]);
 
-  // Simulated AI response engine (UAE Cultural Context)
-  const getSimulatedResponse = (query: string, currentMode: string): string => {
-    const q = query.toLowerCase();
-    
-    if (q.includes("abu dhabi") && (q.includes("weekend") || q.includes("plan"))) {
-      return `Marhaba! Here is a curated weekend family plan in Abu Dhabi, designed to respect both child energy levels and elderly accessibility:
+  useEffect(() => {
+    if (!presetInput) return;
+    setInput(presetInput);
+    clearPreset();
+  }, [clearPreset, presetInput]);
 
-**Day 1 (Saturday): Heritage & Culture**
-* **Morning (10:00 AM):** Visit **Louvre Abu Dhabi** for a relaxed indoor art tour under the floating dome. *Tip: Wheelchairs are available free of charge for Grandfather Mohammed.*
-* **Lunch (1:00 PM):** Family lunch at the Fouquet's Louvre restaurant or nearby Saadiyat Beach Club.
-* **Afternoon (3:30 PM):** Tour **Qasr Al Watan** (Palace of the Nation) to admire grand Islamic architecture and library.
-* **Evening (6:30 PM):** Relaxed tea and traditional snacks at a Majlis-style seating café overlooking the Corniche.
+  useEffect(() => {
+    setEphemeralInvitationLinks(undefined);
+  }, [familyId]);
 
-**Day 2 (Sunday): Wildlife & Outdoors**
-* **Morning (9:30 AM):** Visit the **Abu Dhabi Falcon Hospital** for a unique guided tour. Sultan will love seeing the medical care of falcons, and Grandfather can share heritage poetry.
-* **Afternoon (1:00 PM):** Family picnic lunch at **Al Mushrif Family Park** under the Ghaf trees.
-* **Late Afternoon:** Drive back comfortably, stopping by the Sheikh Zayed Grand Mosque for Maghrib prayers.
+  useEffect(() => {
+    if (!isActive) setEphemeralInvitationLinks(undefined);
+  }, [isActive]);
 
-Does this schedule suit the Al Mansouri family, or would you like to adjust the timings?`;
-    }
-
-    if (q.includes("grandparent") || q.includes("elderly") || q.includes("mohammed")) {
-      return `As your ${currentMode}, I highly recommend activities that prioritize comfort, heritage, and intergenerational connection:
-
-1. **Shared Storytelling in the Majlis:** Host a weekend tea hour. Have Sultan ask Grandfather Mohammed about old falconry techniques or life before the union of the Emirates. This preserves family heritage.
-2. **Visit Al Shindagha Museum (Dubai):** This is a world-class, fully accessible indoor museum telling the story of Dubai's creek. Extremely comfortable for elders and educational for kids.
-3. **Picnic at Al Mamzar Beach Park:** You can rent a private, air-conditioned chalet at Al Mamzar. This allows Grandfather Mohammed to enjoy the sea views and family atmosphere in complete cool comfort.
-4. **Gentle Walk at Al Ain Oasis:** Stroll under the shaded date palm canopy using the paved, flat walkways, utilizing traditional Falaj irrigation systems as a talking point.`;
+  const sendMessage = async (overrideInput?: string) => {
+    const messageText = (overrideInput ?? input).trim();
+    if (!messageText || isLoading || !familyId) return;
+    if (!aiProcessingConsent) {
+      setError({
+        phase: 'request',
+        outcome: 'unchanged',
+        title: 'Approval needed',
+        message: 'Review and accept the Gemini data disclosure for this request.',
+        consequence: 'Nothing was sent to Gemini and no family data was changed.',
+      });
+      return;
     }
 
-    if (q.includes("ramadan") || q.includes("iftar") || q.includes("suhoor")) {
-      return `Ramadan Kareem! Organizing a successful gathering for the Al Mansouri extended family:
+    const userMessage: AgentMessage = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      text: messageText,
+    };
 
-1. **Venue Selection:** The family Majlis is ideal. If you want an outdoor experience, consider booking a private farm camp in Al Awir or Al Khawaneej, which combines privacy with traditional desert charm.
-2. **Catering & Diet:** Blend classic Emirati dishes (Harees, Machboos, Luqaimat) with lighter, low-sodium options for Grandfather Mohammed. Serve fresh dates and traditional Arabic coffee (Gahwa).
-3. **Invitation Timeline:** Send invitation cards 5-7 days in advance via the Gatherings tab.
-4. **Gathering Spirit:** Plan a short post-Iftar trivia game about family history or Islamic traditions for the children.
-
-Would you like me to draft a custom message template for you to send to cousins and uncles?`;
-    }
-
-    if (q.includes("invitation") || q.includes("arabic") || q.includes("polite")) {
-      return `Here is a respectful, traditional invitation template in both Arabic and English, perfect for sending to your extended family:
-
-**Arabic Version:**
-« السلام عليكم ورحمة الله وبركاته،
-يسرنا أن ندعوكم لمشاركتنا لقاء عائلتنا المبارك وتناول طعام الغداء في مجلس الوالد محمد، وذلك يوم الجمعة الموافق لحضوركم الكريم. حضوركم يبهج قلوبنا ويقوي روابطنا.
-حفظكم الله ورعاكم. »
-
-**English Translation:**
-"Peace, mercy, and blessings of God be upon you.
-We are honored to invite you to join our family gathering and lunch at Father Mohammed's Majlis this coming Friday. Your presence brings joy to our hearts and strengthens our bonds.
-May God protect and bless you."
-
-You can easily copy this and paste it directly into your gathering plan notes!`;
-    }
-
-    // Generic fallback responses based on mode
-    switch (currentMode) {
-      case 'Family Advisor':
-        return `Marhaba! As your UAE Family Advisor, I've analyzed your request. To support the Al Mansouri family:
-- Let's make sure daily schedules align with prayer times and heat restrictions, especially during summer.
-- I recommend allocating Friday afternoons for extended family visits to strengthen relations (Silat al-Rahim).
-- Let me know if you need help budgeting local outings or planning traditional gatherings.`;
-      
-      case 'Wellbeing Coach':
-        return `Assalamu Alaikum! As your Wellbeing Coach, I recommend:
-- Keeping track of Grandfather Mohammed's daily steps (currently 3,200). A short, indoor walk after Maghrib prayers would be highly beneficial.
-- Encouraging Sultan (12, Robotics/Football) to balance screen time with active sports.
-- Keeping hydration levels high across all members, aiming for 3 liters of water daily due to the local climate.`;
-      
-      case 'Parenting Helper':
-        return `Hello! As your UAE Parenting Helper:
-- For Sultan (12 years), robotics is excellent! You can enroll him in the upcoming competition at Dubai Future Labs.
-- Ensure children participate in family Majlis gatherings. It teaches them traditional Emirati etiquette (Sana'a), coffee serving protocols, and respect for elders.
-- If you're dealing with routine issues, let's establish a reward chart based on school achievements and helping grandparents.`;
-      
-      case 'Activity Planner':
-        return `Marhaba! As your UAE Activity Planner, here are fresh suggestions:
-- **Indoor:** Dubai Mall Aquarium, House of Artisans (Abu Dhabi), or Sharjah Discovery Centre.
-- **Outdoor (Best in cooler months):** Hatta Kayaking, Al Qudra Lakes, or archaeological walks at Mleiha Heritage Site.
-- **Volunteering:** Register the family on the volunteers.ae portal for community work in Dubai or Abu Dhabi.`;
-      
-      default:
-        return `I am here to assist the Al Mansouri family. Please ask me about UAE activity plans, heritage gathering schedules, or general wellbeing advice.`;
-    }
-  };
-
-  const handleSend = async (overrideInput?: string) => {
-    const messageText = overrideInput || input;
-    if (!messageText.trim() || isLoading) return;
-
-    const userMsg: Message = { id: Date.now().toString(), role: 'user', text: messageText };
-    setMessages(prev => [...prev, userMsg]);
+    setMessages((current) => [...current, userMessage]);
     setInput('');
+    setError(undefined);
     setIsLoading(true);
-    setApiWarning(false);
 
     try {
-      const response = await fetch('/api/ai/chat', {
+      const body = await apiRequest<AgentResponse>('/api/agent/messages', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: messageText,
-          context: { familyName: "Al Mansouri Family", members: members.map(m => m.name) },
-          mode
-        })
+        body: JSON.stringify({ familyId, sessionId, message: messageText, aiProcessingConsent: true }),
       });
-      
-      if (!response.ok) {
-        throw new Error("API not configured or server error");
+      if (!body.sessionId || !body.kind || !body.message) {
+        throw new Error('The family agent returned an invalid response.');
       }
 
-      const data = await response.json();
-      const assistantMsg: Message = { 
-        id: (Date.now() + 1).toString(), 
-        role: 'assistant', 
-        text: data.text || "I'm sorry, I encountered an issue." 
-      };
-      setMessages(prev => [...prev, assistantMsg]);
-    } catch (error) {
-      console.log("Using simulated advisor fallback:", error);
-      // Trigger a visual warning but proceed with highly accurate local simulated response
-      setApiWarning(true);
-      
-      // Add slight typing delay to feel organic
-      setTimeout(() => {
-        const fallbackText = getSimulatedResponse(messageText, mode);
-        const assistantMsg: Message = { 
-          id: (Date.now() + 1).toString(), 
-          role: 'assistant', 
-          text: fallbackText 
-        };
-        setMessages(prev => [...prev, assistantMsg]);
-        setIsLoading(false);
-      }, 800);
-      return; // Return early as setTimeout handles loading
+      setSessionId(body.sessionId);
+      setMessages((current) => [
+        ...current,
+        {
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          text: body.message,
+          proposal: body.proposal,
+          proposalStatus: body.proposal ? 'pending' : undefined,
+        },
+      ]);
+    } catch (requestError) {
+      setError({
+        phase: 'request',
+        outcome: 'unchanged',
+        title: 'Agent request failed',
+        message: requestErrorMessage(requestError, 'The family agent is currently unavailable.'),
+        consequence: 'No family data was changed by this request.',
+      });
+    } finally {
+      setIsLoading(false);
+      setAiProcessingConsent(false);
     }
-    setIsLoading(false);
   };
 
-  const suggestions = [
-    "Plan a family weekend in Abu Dhabi",
-    "Suggest activities for grandparents",
-    "Help organize a Ramadan gathering",
-    "Polite invitation in Arabic"
-  ];
+  const resolveProposal = async (
+    proposal: ActionProposal,
+    decision: 'confirm' | 'reject',
+    options: { statusCheck?: boolean } = {},
+  ) => {
+    const proposalId = proposal.id;
+    if (decision === 'confirm' && !canRoleConfirmAgentAction(proposal.actionType, familyRole)) {
+      setError({
+        phase: 'confirmation',
+        outcome: 'unchanged',
+        title: 'Approval not permitted',
+        message: 'Your family role cannot approve this action. The server will not perform it.',
+        consequence: 'No family data was changed.',
+      });
+      return;
+    }
+    if (
+      decision === 'confirm'
+      && !options.statusCheck
+      && isDestructiveAgentAction(proposal.actionType)
+      && !window.confirm(buildDestructiveAgentConfirmation(proposal))
+    ) {
+      return;
+    }
+
+    if (decision === 'confirm' && !options.statusCheck && proposal.actionType === 'PREPARE_INVITATION_LINKS') {
+      // Old tokens may be invalid after a successful rotation. Never leave a
+      // potentially stale private URL visible while a replacement is pending.
+      setEphemeralInvitationLinks(undefined);
+    }
+
+    setActiveProposalId(proposalId);
+    setError(undefined);
+
+    try {
+      const body = await apiRequest<AgentProposalResolutionResponse>(`/api/agent/action-proposals/${encodeURIComponent(proposalId)}/${decision}`, {
+        method: 'POST',
+      });
+
+      setMessages((current) => current.map((message) => (
+        message.proposal?.id === proposalId
+          ? { ...message, proposalStatus: decision === 'confirm' ? 'confirmed' : 'rejected' }
+          : message
+      )).concat({
+        id: `result-${Date.now()}`,
+        role: 'assistant',
+        text: body.message || (decision === 'confirm' ? 'The approved change was completed.' : 'The proposed change was cancelled. No family data was changed.'),
+        completedActionType: decision === 'confirm' ? proposal.actionType : undefined,
+      }));
+      setUncertainProposalIds((current) => {
+        const next = new Set(current);
+        next.delete(proposalId);
+        return next;
+      });
+
+      if (decision === 'confirm') {
+        const preparedLinks = extractEphemeralInvitationLinks(proposal.actionType, body.result);
+        if (preparedLinks) setEphemeralInvitationLinks(preparedLinks);
+        if (proposal.actionType === 'PREPARE_INVITATION_LINKS' && !preparedLinks) {
+          setError({
+            phase: 'confirmation',
+            outcome: 'completed',
+            title: 'Private links are not available in this result',
+            message: invitationLinksUnavailableMessage(Boolean(body.alreadyCompleted)),
+            consequence: 'The invitation action is complete. Its private URLs are intentionally not recoverable from the conversation or a repeated confirmation.',
+          });
+        }
+
+        const resources = getAgentActionResources(proposal.actionType);
+        if (resources.includes('plans')) {
+          setPlanRefreshVersion((current) => current + 1);
+        }
+        try {
+          await onActionCompleted?.({ actionType: proposal.actionType, resources });
+        } catch {
+          setError({
+            phase: 'refresh',
+            outcome: 'completed',
+            title: 'Change completed; refresh failed',
+            message: 'Another screen could not refresh automatically. Open that screen and use Refresh.',
+            consequence: 'The approved action completed. Only the follow-up screen refresh failed.',
+          });
+        }
+      }
+    } catch (requestError) {
+      const notice = proposalResolutionError(requestError, decision);
+      setError(notice);
+      if (decision === 'confirm' && notice.outcome === 'unknown') {
+        setUncertainProposalIds((current) => new Set(current).add(proposalId));
+      }
+    } finally {
+      setActiveProposalId(undefined);
+    }
+  };
+
+  const deleteConversation = async () => {
+    if (!sessionId || !window.confirm('Permanently delete this AI conversation and its pending proposals?')) return;
+    setIsLoading(true);
+    setError(undefined);
+    try {
+      await apiRequest<void>(`/api/agent/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+      setSessionId(undefined);
+      setMessages([welcomeMessage]);
+      setUncertainProposalIds(new Set());
+      setInput('');
+      setAiProcessingConsent(false);
+      setEphemeralInvitationLinks(undefined);
+    } catch (requestError) {
+      setError({
+        phase: 'conversation',
+        outcome: 'unknown',
+        title: 'Conversation deletion could not be verified',
+        message: requestErrorMessage(requestError, 'The conversation could not be deleted.'),
+        consequence: 'Family records were not changed. The conversation may already have been deleted if the connection failed after the server acted.',
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-200px)]">
-      {/* Mode Selector */}
-      <div className="flex gap-3 overflow-x-auto pb-4 scrollbar-hide shrink-0">
-        {['Family Advisor', 'Wellbeing Coach', 'Parenting Helper', 'Activity Planner'].map((role) => (
-          <button
-            key={role}
-            onClick={() => setMode(role)}
-            className={cn(
-              "px-5 py-2.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all whitespace-nowrap",
-              mode === role 
-                ? "bg-ink text-white shadow-xl scale-105" 
-                : "bg-white text-ink/40 border border-sepia hover:border-gold hover:text-ink/60"
-            )}
-          >
-            {role}
-          </button>
-        ))}
+    <div className="flex min-h-[32rem] flex-col lg:h-[calc(100vh-12rem)]">
+      <div className="mb-4 rounded-2xl border border-gold/20 bg-gold/10 p-4 text-ink">
+        <div className="flex items-start gap-3">
+          <ShieldCheck className="mt-0.5 shrink-0 text-gold" size={18} />
+          <div className="flex-1">
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-gold">Confirm-before-write agent</p>
+            <p className="mt-1 text-xs leading-relaxed text-ink/65">
+              The model may suggest actions, but validated server code performs them only after you approve the exact change.
+            </p>
+          </div>
+          {sessionId && (
+            <button
+              type="button"
+              onClick={() => void deleteConversation()}
+              disabled={isLoading}
+              className="shrink-0 rounded-xl border border-gold/30 px-3 py-2 text-[9px] font-bold uppercase tracking-wider text-ink/55 hover:border-red-300 hover:text-red-700 disabled:opacity-40"
+            >
+              Delete conversation
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* API Key Fallback Notice */}
-      {apiWarning && (
-        <div className="bg-gold/10 border border-gold/20 p-3.5 rounded-2xl mb-4 flex items-center gap-3 shrink-0">
-          <AlertCircle size={16} className="text-gold shrink-0" />
-          <p className="text-[10px] font-bold text-gold uppercase tracking-wider leading-relaxed">
-            Running in Offline Sandbox Mode • Generates offline UAE cultural insights
-          </p>
+      {!familyId && (
+        <div className="mb-4 flex items-center gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-700" role="alert">
+          <AlertCircle size={18} />
+          <p className="text-xs font-semibold">Sign in and select a family before using the agent.</p>
         </div>
       )}
 
-      {/* Chat Area */}
-      <div className="flex-1 overflow-y-auto mb-4 space-y-6 pr-2 custom-scrollbar">
-        {messages.map((msg) => (
+      {familyId && roleNotice && (
+        <div className="mb-4 flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-800" role="status">
+          <AlertCircle size={18} />
+          <p className="text-xs font-semibold">{roleNotice}</p>
+        </div>
+      )}
+
+      {familyId ? (
+        <ReconnectionPlansPanel
+          familyId={familyId}
+          members={members}
+          refreshVersion={planRefreshVersion}
+          onUsePlan={onUseReconnectionPlan}
+        />
+      ) : null}
+
+      {ephemeralInvitationLinks ? (
+        <PreparedInvitationLinks
+          prepared={ephemeralInvitationLinks}
+          onDismiss={() => setEphemeralInvitationLinks(undefined)}
+          onContinue={onNavigateToActionResult ? () => {
+            setEphemeralInvitationLinks(undefined);
+            onNavigateToActionResult('PREPARE_INVITATION_LINKS');
+          } : undefined}
+        />
+      ) : null}
+
+      {error && (
+        <div className="mb-4 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-700" role="alert" data-agent-error-phase={error.phase}>
+          <AlertCircle className="mt-0.5 shrink-0" size={18} />
+          <div>
+            <p className="text-xs font-bold">{error.title}</p>
+            <p className="mt-1 text-xs leading-relaxed">{error.message}</p>
+            <p className="mt-1 text-[10px] text-red-600/80">{error.consequence}</p>
+          </div>
+        </div>
+      )}
+
+      <div className="mb-4 flex-1 space-y-5 overflow-y-auto pr-2 custom-scrollbar" aria-live="polite">
+        {messages.map((message) => (
           <motion.div
-            initial={{ opacity: 0, y: 10 }}
+            initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
-            key={msg.id}
-            className={cn(
-              "flex items-start gap-4 max-w-[90%]",
-              msg.role === 'user' ? "ml-auto flex-row-reverse" : "mr-auto"
-            )}
+            key={message.id}
+            className={cn('flex max-w-[95%] items-start gap-3 sm:max-w-[88%]', message.role === 'user' ? 'ml-auto flex-row-reverse' : 'mr-auto')}
           >
             <div className={cn(
-              "w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-sm border",
-              msg.role === 'user' ? "bg-ink border-ink" : "bg-white border-sepia"
+              'flex size-9 shrink-0 items-center justify-center rounded-full border shadow-sm',
+              message.role === 'user' ? 'border-ink bg-ink text-white' : 'border-sepia bg-white text-gold',
             )}>
-              <span className="text-xs font-bold">{msg.role === 'user' ? 'UA' : 'AI'}</span>
+              {message.role === 'user' ? <span className="text-[10px] font-bold">YOU</span> : <Bot size={17} />}
             </div>
-            <div className={cn(
-              "p-5 rounded-3xl text-sm leading-relaxed shadow-sm whitespace-pre-line",
-              msg.role === 'user' 
-                ? "bg-ink text-white rounded-tr-none" 
-                : "bg-white text-ink border border-sepia rounded-tl-none font-serif italic"
-            )}>
-              {msg.text}
+            <div className="min-w-0 flex-1 space-y-3">
+              <div className={cn(
+                'whitespace-pre-wrap rounded-3xl p-5 text-sm leading-relaxed shadow-sm',
+                message.role === 'user'
+                  ? 'rounded-tr-none bg-ink text-white'
+                  : 'rounded-tl-none border border-sepia bg-white text-ink',
+              )}>
+                {message.text}
+                {message.completedActionType && message.completedActionType !== 'PREPARE_INVITATION_LINKS' && getAgentResultDestinationLabel(message.completedActionType) && onNavigateToActionResult ? (
+                  <button
+                    type="button"
+                    onClick={() => onNavigateToActionResult(message.completedActionType!)}
+                    className="mt-3 flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-gold hover:text-ink"
+                  >
+                    {getAgentResultDestinationLabel(message.completedActionType)} <ArrowRight size={12} />
+                  </button>
+                ) : null}
+              </div>
+
+              {message.proposal && (
+                <div className="rounded-3xl border border-gold/35 bg-white p-5 shadow-md">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-gold">Proposed action</p>
+                      <h3 className="mt-1 font-serif text-lg font-bold italic text-ink">{message.proposal.title}</h3>
+                    </div>
+                    <span className="rounded-full bg-sand px-3 py-1 text-[8px] font-bold uppercase tracking-wider text-ink/50">
+                      {humanizeAgentLabel(message.proposal.actionType)}
+                    </span>
+                  </div>
+                  <p className="mt-3 text-xs leading-relaxed text-ink/65">{message.proposal.summary}</p>
+
+                  {message.proposal.details && Object.keys(message.proposal.details).length > 0 && (
+                    <dl className="mt-4 divide-y divide-sepia/40 overflow-hidden rounded-2xl border border-sepia/50">
+                      {Object.entries(message.proposal.details).map(([label, value]) => (
+                        <div key={label} className="grid grid-cols-[8rem_1fr] gap-3 px-4 py-2.5 text-xs">
+                          <dt className="font-bold text-ink/45">{humanizeAgentLabel(label)}</dt>
+                          <dd className="break-words text-ink">{formatAgentDetail(value)}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+
+                  {message.proposal.warnings?.map((warning) => (
+                    <p key={warning} className="mt-3 flex items-start gap-2 text-[10px] leading-relaxed text-amber-700">
+                      <AlertCircle className="mt-0.5 shrink-0" size={13} /> {warning}
+                    </p>
+                  ))}
+
+                  {message.proposalStatus === 'pending' ? (
+                    <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+                      {uncertainProposalIds.has(message.proposal.id) ? (
+                        <button
+                          type="button"
+                          disabled={Boolean(activeProposalId)}
+                          onClick={() => void resolveProposal(message.proposal!, 'confirm', { statusCheck: true })}
+                          className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-amber-900 hover:bg-amber-100 disabled:opacity-40"
+                        >
+                          {activeProposalId === message.proposal.id ? <LoaderCircle className="animate-spin" size={15} /> : <Check size={15} />}
+                          Check confirmation status
+                        </button>
+                      ) : canRoleConfirmAgentAction(message.proposal.actionType, familyRole) ? (
+                        <button
+                          type="button"
+                          disabled={Boolean(activeProposalId)}
+                          onClick={() => void resolveProposal(message.proposal!, 'confirm')}
+                          className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-ink px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-white transition-colors hover:bg-gold disabled:opacity-40"
+                        >
+                          {activeProposalId === message.proposal.id ? <LoaderCircle className="animate-spin" size={15} /> : <Check size={15} />}
+                          {getAgentConfirmButtonLabel(message.proposal.actionType)}
+                        </button>
+                      ) : (
+                        <p className="flex-1 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[10px] font-semibold leading-relaxed text-amber-800">
+                          Your role cannot approve this action. A family owner or administrator must make this change.
+                        </p>
+                      )}
+                      {!uncertainProposalIds.has(message.proposal.id) ? (
+                        <button
+                          type="button"
+                          disabled={Boolean(activeProposalId)}
+                          onClick={() => void resolveProposal(message.proposal!, 'reject')}
+                          className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-sepia px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-ink/60 transition-colors hover:border-red-300 hover:text-red-600 disabled:opacity-40"
+                        >
+                          <X size={15} /> Cancel
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className={cn(
+                      'mt-4 flex items-center gap-2 rounded-xl px-4 py-3 text-[10px] font-bold uppercase tracking-wider',
+                      message.proposalStatus === 'confirmed' ? 'bg-green-50 text-green-700' : 'bg-sand text-ink/50',
+                    )}>
+                      {message.proposalStatus === 'confirmed' ? <Check size={14} /> : <X size={14} />}
+                      {message.proposalStatus === 'confirmed' ? 'Confirmed and completed' : 'Cancelled — no changes made'}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </motion.div>
         ))}
+
         {isLoading && (
-          <div className="flex items-center gap-2 pl-4">
-            <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ repeat: Infinity, duration: 0.8 }} className="w-2 h-2 rounded-full bg-gold" />
-            <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ repeat: Infinity, duration: 0.8, delay: 0.2 }} className="w-2 h-2 rounded-full bg-gold" />
-            <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ repeat: Infinity, duration: 0.8, delay: 0.4 }} className="w-2 h-2 rounded-full bg-gold" />
+          <div className="flex items-center gap-3 pl-12 text-gold">
+            <LoaderCircle className="animate-spin" size={17} />
+            <span className="text-[10px] font-bold uppercase tracking-widest">Reading permitted family context</span>
           </div>
         )}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Suggestions */}
-      {messages.length < 3 && (
-        <div className="mb-4 space-y-2.5 shrink-0">
-          <p className="text-[9px] font-bold text-ink/40 uppercase tracking-[0.3em] pl-1">Quick Prompts</p>
+      {messages.length < 4 && (
+        <div className="mb-4 shrink-0">
+          <p className="mb-2 text-[9px] font-bold uppercase tracking-[0.25em] text-ink/40">Try a request</p>
           <div className="flex flex-wrap gap-2">
-            {suggestions.map((s) => (
+            {quickPrompts.map((prompt) => (
               <button
-                key={s}
-                onClick={() => setInput(s)}
-                className="bg-white border border-sepia px-4 py-2.5 rounded-xl text-[10px] uppercase font-bold tracking-widest text-ink/60 hover:border-gold hover:text-gold transition-all"
+                key={prompt}
+                type="button"
+                onClick={() => setInput(prompt)}
+                className="rounded-xl border border-sepia bg-white px-3 py-2 text-left text-[10px] font-semibold text-ink/60 transition-colors hover:border-gold hover:text-gold"
               >
-                {s}
+                <Sparkles className="mr-1.5 inline" size={12} /> {prompt}
               </button>
             ))}
           </div>
         </div>
       )}
 
-      {/* Input Area */}
-      <div className="relative group shrink-0">
+      <label className="mb-3 flex cursor-pointer items-start gap-3 rounded-2xl border border-sepia bg-white p-4 text-xs text-ink/65">
         <input
+          type="checkbox"
+          checked={aiProcessingConsent}
+          onChange={(event) => setAiProcessingConsent(event.target.checked)}
+          disabled={!familyId || isLoading}
+          className="mt-0.5 size-4 accent-gold"
+        />
+        <span>
+          <strong className="block text-ink">Send this request to Google Gemini</strong>
+          {agentDataDisclosureText}
+        </span>
+      </label>
+      <div className="relative shrink-0">
+        <label htmlFor="family-agent-input" className="sr-only">Ask the family agent</label>
+        <input
+          id="family-agent-input"
           value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-          placeholder={`Ask the ${mode}...`}
-          className="w-full bg-white border border-sepia rounded-2xl px-6 py-4 text-sm focus:outline-none focus:ring-1 focus:ring-gold shadow-sm pr-14 text-ink"
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault();
+              sendMessage();
+            }
+          }}
+          disabled={!familyId || isLoading}
+          placeholder="For example: Add my aunt Maryam, my mother's sister..."
+          className="w-full rounded-2xl border border-sepia bg-white px-5 py-4 pr-14 text-sm text-ink shadow-sm focus:outline-none focus:ring-1 focus:ring-gold disabled:bg-sand disabled:text-ink/35"
         />
         <button
-          onClick={() => handleSend()}
-          disabled={!input.trim() || isLoading}
-          className="absolute right-2 top-2 p-3 bg-ink text-white rounded-xl shadow-lg disabled:opacity-30 disabled:grayscale transition-all active:scale-95 hover:bg-gold"
+          type="button"
+          aria-label="Send request"
+          onClick={() => sendMessage()}
+          disabled={!familyId || !input.trim() || !aiProcessingConsent || isLoading}
+          className="absolute right-2 top-2 rounded-xl bg-ink p-3 text-white shadow-lg transition-all hover:bg-gold disabled:opacity-30"
         >
           <Send size={18} />
         </button>
