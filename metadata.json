@@ -1,0 +1,8 @@
+{
+  "name": "UAE Family Companion",
+  "description": "An AI-powered family assistant designed to support family life, wellbeing, and cultural connection in the UAE.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
