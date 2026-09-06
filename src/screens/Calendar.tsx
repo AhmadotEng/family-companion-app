@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Calendar as CalendarIcon,
   Check,
@@ -23,8 +23,17 @@ import { AnimatePresence, motion } from 'motion/react';
 import { ApiError } from '../api/client';
 import { engagementApi } from '../api/engagement';
 import type { GatheringPlanPrefill } from '../api/reconnectionPlans';
+import { GatheringPlanner, type GatheringPlannerStage } from '../components/GatheringPlanner';
 import type { PersistentGathering, PreparedInvitation, RsvpStatus } from '../engagementTypes';
-import { dubaiTodayKey, formatDubaiDateKey, formatDubaiDateTime, toDubaiIso } from '../lib/gatheringDate';
+import { absoluteInvitationUrl } from '../lib/agentInvitationLinks';
+import { dubaiTodayKey, formatDubaiDateKey, formatDubaiDateTime } from '../lib/gatheringDate';
+import { createGatheringPlannerIdempotencyKey } from '../lib/gatheringPlanner';
+import {
+  clearManualGatheringRetryState,
+  readManualGatheringRetryState,
+  writeManualGatheringRetryState,
+} from '../lib/manualGatheringRetry';
+import { useModalFocusTrap } from '../lib/modalFocus';
 import { cn } from '../lib/utils';
 import type { FamilyMember, FamilyRole } from '../types';
 
@@ -37,34 +46,29 @@ interface CalendarProps {
   onPlanPrefillConsumed?: () => void;
   onGatheringsChanged?: (gatherings: PersistentGathering[]) => void;
   refreshVersion?: number;
+  focusTarget?: CalendarFocusTarget | null;
+}
+
+export interface CalendarFocusTarget {
+  familyId: string;
+  gatheringId?: string;
+  startAt: string;
 }
 
 type InvitationChannel = 'share_link' | 'whatsapp';
-type PlannerStage = 'details' | 'review' | 'links';
 
-interface GatheringDraft {
-  title: string;
-  purpose: string;
-  date: string;
-  time: string;
-  type: string;
-  locationName: string;
-  notes: string;
-  memberIds: string[];
-  channel: InvitationChannel;
+interface ActivePlanner {
+  familyId: string;
+  currentUserId?: string;
+  requestVersion: number;
+  idempotencyKey: string;
+  uncertainCreateOutcome?: boolean;
+  prefill?: GatheringPlanPrefill;
+  source: 'manual' | 'reconnection';
+  sourceLabel?: string;
+  defaultDate?: string;
+  defaultTime?: string;
 }
-
-const newDraft = (date = dubaiTodayKey()): GatheringDraft => ({
-  title: '',
-  purpose: '',
-  date,
-  time: '18:30',
-  type: 'Family gathering',
-  locationName: '',
-  notes: '',
-  memberIds: [],
-  channel: 'share_link',
-});
 
 const dateFromKey = (key: string) => new Date(`${key}T12:00:00`);
 
@@ -111,21 +115,20 @@ function PreparedLinks({
   const [copiedMemberId, setCopiedMemberId] = useState('');
   const [copyError, setCopyError] = useState('');
 
-  const absoluteLink = (invitation: PreparedInvitation) => invitation.shareUrl ?? new URL(invitation.sharePath, window.location.origin).toString();
-  const copyLink = async (invitation: PreparedInvitation) => {
+  const copyLink = async (invitation: PreparedInvitation, invitationUrl: string) => {
     setCopyError('');
     try {
-      await navigator.clipboard.writeText(absoluteLink(invitation));
+      await navigator.clipboard.writeText(invitationUrl);
       setCopiedMemberId(invitation.memberId);
       window.setTimeout(() => setCopiedMemberId(''), 1800);
     } catch {
       setCopyError('The browser blocked clipboard access. Open the link and copy it from the address bar.');
     }
   };
-  const openWhatsApp = (invitation: PreparedInvitation) => {
+  const openWhatsApp = (invitationUrl: string) => {
     // Build this client-side so the shared message always contains an absolute
     // URL, including when an older server returned a relative WhatsApp link.
-    const message = `Family gathering invitation: ${gathering.title} on ${formatDubaiDateTime(gathering.startAt, 'short')}. Please RSVP: ${absoluteLink(invitation)}`;
+    const message = `Family gathering invitation: ${gathering.title} on ${formatDubaiDateTime(gathering.startAt, 'short')}. Please RSVP: ${invitationUrl}`;
     window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
   };
 
@@ -139,26 +142,35 @@ function PreparedLinks({
         ) : null}
       </div>
       <div className="space-y-2">
-        {invitations.map(invitation => (
-          <div key={invitation.memberId} className="rounded-2xl border border-sepia bg-white p-3">
-            <p className="text-xs font-bold text-ink">{invitation.memberName}</p>
-            <p className="mt-1 truncate text-[10px] text-ink/45">{absoluteLink(invitation)}</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" onClick={() => void copyLink(invitation)} className="flex items-center gap-1.5 rounded-lg bg-ink px-3 py-2 text-[9px] font-bold uppercase tracking-wider text-white hover:bg-gold">
-                {copiedMemberId === invitation.memberId ? <Check size={12} /> : <Copy size={12} />}
-                {copiedMemberId === invitation.memberId ? 'Copied' : 'Copy link'}
-              </button>
-              <a href={absoluteLink(invitation)} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 rounded-lg border border-sepia px-3 py-2 text-[9px] font-bold uppercase tracking-wider hover:border-gold">
-                <ExternalLink size={12} /> Preview
-              </a>
-              {invitation.whatsappUrl ? (
-                <button type="button" onClick={() => openWhatsApp(invitation)} className="flex items-center gap-1.5 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-[9px] font-bold uppercase tracking-wider text-green-800 hover:bg-green-100">
-                  <MessageCircle size={12} /> Open WhatsApp
-                </button>
-              ) : null}
+        {invitations.map(invitation => {
+          const invitationUrl = absoluteInvitationUrl(invitation, window.location.origin);
+          return (
+            <div key={invitation.memberId} className="rounded-2xl border border-sepia bg-white p-3">
+              <p className="text-xs font-bold text-ink">{invitation.memberName}</p>
+              {invitationUrl ? (
+                <>
+                  <p className="mt-1 truncate text-[10px] text-ink/45">{invitationUrl}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button type="button" onClick={() => void copyLink(invitation, invitationUrl)} className="flex items-center gap-1.5 rounded-lg bg-ink px-3 py-2 text-[9px] font-bold uppercase tracking-wider text-white hover:bg-gold">
+                      {copiedMemberId === invitation.memberId ? <Check size={12} /> : <Copy size={12} />}
+                      {copiedMemberId === invitation.memberId ? 'Copied' : 'Copy link'}
+                    </button>
+                    <a href={invitationUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 rounded-lg border border-sepia px-3 py-2 text-[9px] font-bold uppercase tracking-wider hover:border-gold">
+                      <ExternalLink size={12} /> Preview
+                    </a>
+                    {invitation.whatsappUrl ? (
+                      <button type="button" onClick={() => openWhatsApp(invitationUrl)} className="flex items-center gap-1.5 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-[9px] font-bold uppercase tracking-wider text-green-800 hover:bg-green-100">
+                        <MessageCircle size={12} /> Open WhatsApp
+                      </button>
+                    ) : null}
+                  </div>
+                </>
+              ) : (
+                <p role="alert" className="mt-2 text-xs text-red-700">This invitation link is unavailable. Prepare a new link before sharing.</p>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       {copyError ? <p role="alert" className="text-xs text-red-700">{copyError}</p> : null}
     </div>
@@ -182,13 +194,29 @@ function MemberPicker({ members, selected, onToggle }: { members: FamilyMember[]
   );
 }
 
-function ModalShell({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+function ModalShell({
+  title,
+  onClose,
+  closeDisabled = false,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  closeDisabled?: boolean;
+  children: ReactNode;
+}) {
+  const dialogRef = useModalFocusTrap<HTMLDivElement>({
+    active: true,
+    onEscape: onClose,
+    escapeDisabled: closeDisabled,
+  });
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={title}>
+    <div ref={dialogRef} tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center bg-ink/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={title}>
       <motion.section initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.97 }} className="flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-[2rem] border border-sepia bg-white shadow-2xl">
         <header className="flex items-center justify-between border-b border-sepia bg-sand px-6 py-5">
           <h3 className="font-serif text-xl font-bold italic text-ink">{title}</h3>
-          <button type="button" onClick={onClose} className="rounded-full p-1.5 hover:bg-sepia/30" aria-label="Close"><X size={20} /></button>
+          <button type="button" onClick={onClose} disabled={closeDisabled} className="rounded-full p-1.5 hover:bg-sepia/30 disabled:opacity-40" aria-label="Close"><X size={20} /></button>
         </header>
         {children}
       </motion.section>
@@ -205,6 +233,7 @@ export function Calendar({
   onPlanPrefillConsumed,
   onGatheringsChanged,
   refreshVersion = 0,
+  focusTarget,
 }: CalendarProps) {
   const todayKey = dubaiTodayKey();
   const [currentMonth, setCurrentMonth] = useState(() => dateFromKey(todayKey));
@@ -212,13 +241,9 @@ export function Calendar({
   const [gatherings, setGatherings] = useState<PersistentGathering[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
-  const [plannerOpen, setPlannerOpen] = useState(false);
-  const [plannerStage, setPlannerStage] = useState<PlannerStage>('details');
-  const [draft, setDraft] = useState<GatheringDraft>(() => newDraft(todayKey));
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState('');
-  const [savedGathering, setSavedGathering] = useState<PersistentGathering | null>(null);
-  const [prepared, setPrepared] = useState<{ invitations: PreparedInvitation[]; deliveryNotice: string } | null>(null);
+  const [activePlanner, setActivePlanner] = useState<ActivePlanner | null>(null);
+  const [plannerStage, setPlannerStage] = useState<GatheringPlannerStage>('details');
+  const [plannerBusy, setPlannerBusy] = useState(false);
   const [inviteTarget, setInviteTarget] = useState<PersistentGathering | null>(null);
   const [inviteStage, setInviteStage] = useState<'choose' | 'review' | 'links'>('choose');
   const [inviteMemberIds, setInviteMemberIds] = useState<string[]>([]);
@@ -229,76 +254,245 @@ export function Calendar({
   const [completionBusyId, setCompletionBusyId] = useState('');
   const [operationMessage, setOperationMessage] = useState('');
   const [operationError, setOperationError] = useState('');
-  const [plannerSourcePlanTitle, setPlannerSourcePlanTitle] = useState('');
+  const activeFamilyIdRef = useRef(familyId);
+  const mountedRef = useRef(false);
+  const loadRequestVersionRef = useRef(0);
+  const plannerRequestVersionRef = useRef(0);
+  const invitationRequestVersionRef = useRef(0);
+  const completionRequestVersionRef = useRef(0);
+  const manualPlannerRetryRef = useRef<{
+    familyId: string;
+    currentUserId?: string;
+    idempotencyKey: string;
+    uncertainCreateOutcome: boolean;
+  } | null>(null);
+  const manualPlannerScopeRef = useRef<{ familyId: string; currentUserId: string } | null>(null);
+  const confirmedPlannerKeysRef = useRef(new Set<string>());
+  activeFamilyIdRef.current = familyId;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      loadRequestVersionRef.current += 1;
+      plannerRequestVersionRef.current += 1;
+      invitationRequestVersionRef.current += 1;
+      completionRequestVersionRef.current += 1;
+    };
+  }, []);
 
   const publishGatherings = useCallback((next: PersistentGathering[]) => {
     setGatherings(next);
     onGatheringsChanged?.(next);
   }, [onGatheringsChanged]);
 
+  const upsertGathering = useCallback((gathering: PersistentGathering) => {
+    if (!mountedRef.current || activeFamilyIdRef.current !== familyId || gathering.familyId !== familyId) return;
+    publishGatherings(
+      [...gatherings.filter(item => item.id !== gathering.id), gathering]
+        .sort((a, b) => a.startAt.localeCompare(b.startAt)),
+    );
+    const gatheringDate = dateFromKey(formatDubaiDateKey(gathering.startAt));
+    setSelectedDate(gatheringDate);
+    setCurrentMonth(gatheringDate);
+  }, [familyId, gatherings, publishGatherings]);
+
   const loadGatherings = useCallback(async () => {
     if (!familyId) return;
+    const requestedFamilyId = familyId;
+    const requestVersion = ++loadRequestVersionRef.current;
     setLoading(true);
     setLoadError('');
     try {
-      const result = await engagementApi.listGatherings(familyId);
+      const result = await engagementApi.listGatherings(requestedFamilyId);
+      if (
+        !mountedRef.current
+        || activeFamilyIdRef.current !== requestedFamilyId
+        || loadRequestVersionRef.current !== requestVersion
+      ) return;
       publishGatherings(result.gatherings);
     } catch (caught) {
+      if (
+        !mountedRef.current
+        || activeFamilyIdRef.current !== requestedFamilyId
+        || loadRequestVersionRef.current !== requestVersion
+      ) return;
       setLoadError(errorMessage(caught, 'Unable to load family gatherings.'));
     } finally {
-      setLoading(false);
+      if (
+        mountedRef.current
+        && activeFamilyIdRef.current === requestedFamilyId
+        && loadRequestVersionRef.current === requestVersion
+      ) setLoading(false);
     }
   }, [familyId, publishGatherings]);
+
+  useEffect(() => {
+    loadRequestVersionRef.current += 1;
+    plannerRequestVersionRef.current += 1;
+    invitationRequestVersionRef.current += 1;
+    completionRequestVersionRef.current += 1;
+    const previousScope = manualPlannerScopeRef.current;
+    const nextScope = currentUserId && familyId ? { familyId, currentUserId } : null;
+    if (
+      previousScope
+      && (!nextScope
+        || previousScope.familyId !== nextScope.familyId
+        || previousScope.currentUserId !== nextScope.currentUserId)
+    ) {
+      clearManualGatheringRetryState(previousScope.currentUserId, previousScope.familyId);
+    }
+    manualPlannerScopeRef.current = nextScope;
+    const storedRetry = nextScope
+      ? readManualGatheringRetryState(nextScope.currentUserId, nextScope.familyId)
+      : null;
+    manualPlannerRetryRef.current = storedRetry && nextScope ? {
+      ...nextScope,
+      idempotencyKey: storedRetry.idempotencyKey,
+      uncertainCreateOutcome: true,
+    } : null;
+    confirmedPlannerKeysRef.current.clear();
+    setGatherings([]);
+    setLoading(Boolean(familyId));
+    setLoadError('');
+    setActivePlanner(null);
+    setPlannerStage('details');
+    setPlannerBusy(false);
+    setInviteTarget(null);
+    setInviteStage('choose');
+    setInviteMemberIds([]);
+    setInviteChannel('share_link');
+    setInviteBusy(false);
+    setInviteError('');
+    setInvitePrepared(null);
+    setCompletionBusyId('');
+    setOperationMessage('');
+    setOperationError('');
+  }, [currentUserId, familyId]);
 
   useEffect(() => { void loadGatherings(); }, [loadGatherings, refreshVersion]);
 
   useEffect(() => {
+    if (!focusTarget || focusTarget.familyId !== familyId) return;
+    const dateKey = formatDubaiDateKey(focusTarget.startAt);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return;
+    const focusedDate = dateFromKey(dateKey);
+    setSelectedDate(focusedDate);
+    setCurrentMonth(focusedDate);
+  }, [familyId, focusTarget]);
+
+  useEffect(() => {
     if (!planPrefill) return;
-    const availableMemberIds = new Set(members.map((member) => member.id));
-    setDraft({
-      ...newDraft(todayKey),
-      title: planPrefill.title.slice(0, 120),
-      purpose: planPrefill.purpose.slice(0, 500),
-      type: planPrefill.type.slice(0, 80),
-      locationName: planPrefill.locationName.slice(0, 300),
-      notes: planPrefill.notes.slice(0, 2_000),
-      memberIds: planPrefill.memberIds.filter((id) => availableMemberIds.has(id)),
-    });
-    setPlannerSourcePlanTitle(planPrefill.sourcePlanTitle);
+    const requestVersion = ++plannerRequestVersionRef.current;
     setPlannerStage('details');
-    setSavedGathering(null);
-    setPrepared(null);
-    setSaveError('');
-    setPlannerOpen(true);
+    setActivePlanner({
+      familyId,
+      requestVersion,
+      idempotencyKey: createGatheringPlannerIdempotencyKey(),
+      prefill: planPrefill,
+      source: 'reconnection',
+      sourceLabel: planPrefill.sourcePlanTitle,
+    });
     onPlanPrefillConsumed?.();
-  }, [members, onPlanPrefillConsumed, planPrefill, todayKey]);
+  }, [onPlanPrefillConsumed, planPrefill]);
 
   const startDate = startOfMonth(currentMonth);
   const days = eachDayOfInterval({ start: startDate, end: endOfMonth(currentMonth) });
   const selectedKey = format(selectedDate, 'yyyy-MM-dd');
-  const selectedGatherings = gatherings.filter(gathering => formatDubaiDateKey(gathering.startAt) === selectedKey);
-  const nextGathering = useMemo(() => gatherings
+  const scopedGatherings = useMemo(
+    () => gatherings.filter(gathering => gathering.familyId === familyId),
+    [familyId, gatherings],
+  );
+  const selectedGatherings = scopedGatherings.filter(gathering => formatDubaiDateKey(gathering.startAt) === selectedKey);
+  useEffect(() => {
+    if (!focusTarget?.gatheringId || focusTarget.familyId !== familyId) return;
+    if (!selectedGatherings.some(gathering => gathering.id === focusTarget.gatheringId)) return;
+    const card = document.querySelector<HTMLElement>(`[data-gathering-id="${focusTarget.gatheringId}"]`);
+    card?.focus({ preventScroll: true });
+  }, [familyId, focusTarget, gatherings, selectedKey]);
+  const nextGathering = useMemo(() => scopedGatherings
     .filter(gathering => new Date(gathering.startAt).getTime() >= Date.now() && gathering.status !== 'cancelled')
-    .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())[0], [gatherings]);
+    .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())[0], [scopedGatherings]);
 
-  const updateDraft = <K extends keyof GatheringDraft>(key: K, value: GatheringDraft[K]) => setDraft(previous => ({ ...previous, [key]: value }));
-  const toggleDraftMember = (id: string) => updateDraft('memberIds', draft.memberIds.includes(id) ? draft.memberIds.filter(item => item !== id) : [...draft.memberIds, id]);
   const openPlanner = (dateKey = selectedKey) => {
-    setDraft(newDraft(dateKey));
-    setPlannerSourcePlanTitle('');
+    const requestVersion = ++plannerRequestVersionRef.current;
+    const retainedRetry = manualPlannerRetryRef.current?.familyId === familyId
+      && manualPlannerRetryRef.current.currentUserId === currentUserId
+      ? manualPlannerRetryRef.current
+      : undefined;
+    const idempotencyKey = retainedRetry?.idempotencyKey ?? createGatheringPlannerIdempotencyKey();
+    const uncertainCreateOutcome = retainedRetry?.uncertainCreateOutcome ?? false;
+    manualPlannerRetryRef.current = {
+      familyId,
+      currentUserId,
+      idempotencyKey,
+      uncertainCreateOutcome,
+    };
     setPlannerStage('details');
-    setSavedGathering(null);
-    setPrepared(null);
-    setSaveError('');
-    setPlannerOpen(true);
+    setActivePlanner({
+      familyId,
+      currentUserId,
+      requestVersion,
+      idempotencyKey,
+      uncertainCreateOutcome,
+      source: 'manual',
+      defaultDate: dateKey,
+      defaultTime: '18:30',
+    });
   };
   const closePlanner = () => {
-    if (saving) return;
-    setPlannerOpen(false);
+    if (plannerBusy) return;
+    if (activePlanner?.source === 'manual') {
+      if (confirmedPlannerKeysRef.current.has(activePlanner.idempotencyKey)) {
+        confirmedPlannerKeysRef.current.delete(activePlanner.idempotencyKey);
+        if (manualPlannerRetryRef.current?.idempotencyKey === activePlanner.idempotencyKey) {
+          manualPlannerRetryRef.current = null;
+        }
+        if (activePlanner.currentUserId) {
+          clearManualGatheringRetryState(activePlanner.currentUserId, activePlanner.familyId);
+        }
+      } else if (activePlanner.uncertainCreateOutcome) {
+        manualPlannerRetryRef.current = {
+          familyId: activePlanner.familyId,
+          currentUserId: activePlanner.currentUserId,
+          idempotencyKey: activePlanner.idempotencyKey,
+          uncertainCreateOutcome: true,
+        };
+        if (activePlanner.currentUserId) {
+          writeManualGatheringRetryState(
+            activePlanner.currentUserId,
+            activePlanner.familyId,
+            activePlanner.idempotencyKey,
+          );
+        }
+      } else {
+        manualPlannerRetryRef.current = null;
+        if (activePlanner.currentUserId) {
+          clearManualGatheringRetryState(activePlanner.currentUserId, activePlanner.familyId);
+        }
+      }
+    }
+    plannerRequestVersionRef.current += 1;
+    setActivePlanner(null);
     setPlannerStage('details');
-    setSavedGathering(null);
-    setPrepared(null);
-    setPlannerSourcePlanTitle('');
+  };
+
+  const discardUncertainManualRetry = () => {
+    if (plannerBusy || activePlanner?.source !== 'manual' || !activePlanner.uncertainCreateOutcome) return;
+    if (!window.confirm('Start a separate gathering draft? The previous request may already have created a gathering. Check this Calendar before creating another one.')) return;
+    confirmedPlannerKeysRef.current.delete(activePlanner.idempotencyKey);
+    manualPlannerRetryRef.current = null;
+    if (activePlanner.currentUserId) {
+      clearManualGatheringRetryState(activePlanner.currentUserId, activePlanner.familyId);
+    }
+    const requestVersion = ++plannerRequestVersionRef.current;
+    setPlannerStage('details');
+    setActivePlanner({
+      ...activePlanner,
+      requestVersion,
+      idempotencyKey: createGatheringPlannerIdempotencyKey(),
+      uncertainCreateOutcome: false,
+    });
   };
 
   const canManageGathering = (gathering: PersistentGathering) => (
@@ -306,62 +500,8 @@ export function Calendar({
   );
   const canCompleteGathering = familyRole === 'owner' || familyRole === 'admin';
 
-  const reviewDraft = (event: FormEvent) => {
-    event.preventDefault();
-    setSaveError('');
-    try {
-      toDubaiIso(draft.date, draft.time);
-      setPlannerStage('review');
-    } catch (caught) {
-      setSaveError(errorMessage(caught, 'Choose a valid gathering date and time.'));
-    }
-  };
-
-  const saveAndPrepare = async () => {
-    setSaving(true);
-    setSaveError('');
-    let gathering = savedGathering;
-    try {
-      if (!gathering) {
-        const created = await engagementApi.createGathering(familyId, {
-          title: draft.title.trim(),
-          purpose: draft.purpose.trim(),
-          startAt: toDubaiIso(draft.date, draft.time),
-          timezone: 'Asia/Dubai',
-          locationName: draft.locationName.trim(),
-          notes: draft.notes.trim() || undefined,
-          type: draft.type,
-        });
-        gathering = created.gathering;
-        setSavedGathering(gathering);
-        publishGatherings([...gatherings.filter(item => item.id !== gathering!.id), gathering].sort((a, b) => a.startAt.localeCompare(b.startAt)));
-      }
-
-      if (draft.memberIds.length === 0) {
-        setPlannerOpen(false);
-        setSelectedDate(dateFromKey(draft.date));
-        setCurrentMonth(dateFromKey(draft.date));
-        return;
-      }
-
-      const result = await engagementApi.prepareInvitations(gathering.id, { memberIds: draft.memberIds, channel: draft.channel });
-      setPrepared({ invitations: result.invitations, deliveryNotice: result.deliveryNotice });
-      setSavedGathering(result.gathering);
-      publishGatherings(
-        [...gatherings.filter(item => item.id !== result.gathering.id), result.gathering]
-          .sort((a, b) => a.startAt.localeCompare(b.startAt)),
-      );
-      setPlannerStage('links');
-      setSelectedDate(dateFromKey(draft.date));
-      setCurrentMonth(dateFromKey(draft.date));
-    } catch (caught) {
-      setSaveError(`${gathering ? 'The gathering was saved, but invitation links were not prepared. ' : ''}${errorMessage(caught, 'Unable to save the gathering.')}`);
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const openInviteModal = (gathering: PersistentGathering) => {
+    invitationRequestVersionRef.current += 1;
     setInviteTarget(gathering);
     setInviteMemberIds([]);
     setInviteChannel('share_link');
@@ -371,23 +511,41 @@ export function Calendar({
   };
   const closeInviteModal = () => {
     if (inviteBusy) return;
+    invitationRequestVersionRef.current += 1;
     setInviteTarget(null);
     setInvitePrepared(null);
   };
   const prepareExistingInvitations = async () => {
     if (!inviteTarget || inviteMemberIds.length === 0) return;
+    const requestedFamilyId = familyId;
+    const requestVersion = ++invitationRequestVersionRef.current;
     setInviteBusy(true);
     setInviteError('');
     try {
       const result = await engagementApi.prepareInvitations(inviteTarget.id, { memberIds: inviteMemberIds, channel: inviteChannel });
+      if (
+        !mountedRef.current
+        || activeFamilyIdRef.current !== requestedFamilyId
+        || invitationRequestVersionRef.current !== requestVersion
+        || result.gathering.familyId !== requestedFamilyId
+      ) return;
       setInvitePrepared(result);
       setInviteTarget(result.gathering);
       setInviteStage('links');
       publishGatherings(gatherings.map(item => item.id === result.gathering.id ? result.gathering : item));
     } catch (caught) {
+      if (
+        !mountedRef.current
+        || activeFamilyIdRef.current !== requestedFamilyId
+        || invitationRequestVersionRef.current !== requestVersion
+      ) return;
       setInviteError(errorMessage(caught, 'Unable to prepare invitation links.'));
     } finally {
-      setInviteBusy(false);
+      if (
+        mountedRef.current
+        && activeFamilyIdRef.current === requestedFamilyId
+        && invitationRequestVersionRef.current === requestVersion
+      ) setInviteBusy(false);
     }
   };
 
@@ -398,17 +556,34 @@ export function Calendar({
       return;
     }
     if (!confirm(`Mark “${gathering.title}” completed with ${attendees.length} confirmed attendees?`)) return;
+    const requestedFamilyId = familyId;
+    const requestVersion = ++completionRequestVersionRef.current;
     setCompletionBusyId(gathering.id);
     setOperationError('');
     setOperationMessage('');
     try {
       const result = await engagementApi.completeGathering(gathering.id, attendees.map(invitation => invitation.memberId));
+      if (
+        !mountedRef.current
+        || activeFamilyIdRef.current !== requestedFamilyId
+        || completionRequestVersionRef.current !== requestVersion
+        || result.gathering.familyId !== requestedFamilyId
+      ) return;
       publishGatherings(gatherings.map(item => item.id === result.gathering.id ? result.gathering : item));
       setOperationMessage(`Gathering completed. ${result.pointsAwarded} verified family points were added.`);
     } catch (caught) {
+      if (
+        !mountedRef.current
+        || activeFamilyIdRef.current !== requestedFamilyId
+        || completionRequestVersionRef.current !== requestVersion
+      ) return;
       setOperationError(errorMessage(caught, 'The gathering could not be completed.'));
     } finally {
-      setCompletionBusyId('');
+      if (
+        mountedRef.current
+        && activeFamilyIdRef.current === requestedFamilyId
+        && completionRequestVersionRef.current === requestVersion
+      ) setCompletionBusyId('');
     }
   };
 
@@ -441,7 +616,7 @@ export function Calendar({
           {Array.from({ length: startDate.getDay() }).map((_, index) => <div key={`blank-${index}`} />)}
           {days.map(day => {
             const key = format(day, 'yyyy-MM-dd');
-            const count = gatherings.filter(item => formatDubaiDateKey(item.startAt) === key).length;
+            const count = scopedGatherings.filter(item => formatDubaiDateKey(item.startAt) === key).length;
             const selected = key === selectedKey;
             return (
               <button key={key} onClick={() => setSelectedDate(day)} className={cn('relative flex h-14 flex-col items-center justify-center rounded-2xl text-xs font-bold transition-all', selected ? 'scale-105 bg-ink text-white shadow-lg' : 'hover:bg-sand/60', key === todayKey && !selected && 'border border-gold text-gold')} aria-label={`${format(day, 'MMMM d')}${count ? `, ${count} gatherings` : ''}`}>
@@ -467,7 +642,17 @@ export function Calendar({
             <p className="mt-3 font-serif text-lg italic text-ink/50">No gathering planned for this day.</p>
           </div>
         ) : selectedGatherings.map(gathering => (
-          <article key={gathering.id} className="rounded-[2rem] border border-sepia bg-white p-6 shadow-sm">
+          <article
+            key={gathering.id}
+            data-gathering-id={gathering.id}
+            tabIndex={focusTarget?.familyId === familyId && focusTarget.gatheringId === gathering.id ? -1 : undefined}
+            className={cn(
+              'rounded-[2rem] border bg-white p-6 shadow-sm',
+              focusTarget?.familyId === familyId && focusTarget.gatheringId === gathering.id
+                ? 'border-gold ring-2 ring-gold/20'
+                : 'border-sepia',
+            )}
+          >
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <div className="flex flex-wrap items-center gap-2"><h4 className="font-serif text-xl font-bold italic">{gathering.title}</h4><StatusPill status={gathering.status} /></div>
@@ -508,46 +693,116 @@ export function Calendar({
       </section>
 
       <AnimatePresence>
-        {plannerOpen ? (
-          <ModalShell title={plannerStage === 'details' ? 'Plan a gathering' : plannerStage === 'review' ? 'Review before saving' : 'Invitation links'} onClose={closePlanner}>
-            {plannerStage === 'details' ? (
-              <form onSubmit={reviewDraft} className="flex min-h-0 flex-1 flex-col">
-                <div className="space-y-4 overflow-y-auto p-6 text-sm">
-                  <div className="rounded-xl border border-sepia bg-sand/30 p-3 text-xs text-ink/60"><Info size={13} className="mr-1 inline text-gold" /> {plannerSourcePlanTitle ? `Prefilled from the stored plan “${plannerSourcePlanTitle}”. This is editable and nothing is saved or shared until you review and confirm.` : 'Nothing is saved or shared until you review and confirm.'}</div>
-                  <label className="block"><span className="mb-1 block text-[9px] font-bold uppercase tracking-wider">Title</span><input required minLength={2} maxLength={120} value={draft.title} onChange={event => updateDraft('title', event.target.value)} className="w-full rounded-xl border border-sepia bg-sand/20 px-4 py-2.5 outline-none focus:border-gold" placeholder="Friday family dinner" /></label>
-                  <label className="block"><span className="mb-1 block text-[9px] font-bold uppercase tracking-wider">Purpose</span><input required minLength={2} maxLength={500} value={draft.purpose} onChange={event => updateDraft('purpose', event.target.value)} className="w-full rounded-xl border border-sepia bg-sand/20 px-4 py-2.5 outline-none focus:border-gold" placeholder="Reconnect after a busy month" /></label>
-                  <div className="grid grid-cols-2 gap-3">
-                    <label><span className="mb-1 block text-[9px] font-bold uppercase tracking-wider">Date</span><input required type="date" value={draft.date} onChange={event => updateDraft('date', event.target.value)} className="w-full rounded-xl border border-sepia bg-sand/20 px-3 py-2.5" /></label>
-                    <label><span className="mb-1 block text-[9px] font-bold uppercase tracking-wider">Dubai time</span><input required type="time" value={draft.time} onChange={event => updateDraft('time', event.target.value)} className="w-full rounded-xl border border-sepia bg-sand/20 px-3 py-2.5" /></label>
-                  </div>
-                  <label className="block"><span className="mb-1 block text-[9px] font-bold uppercase tracking-wider">Location</span><input required minLength={2} maxLength={300} value={draft.locationName} onChange={event => updateDraft('locationName', event.target.value)} className="w-full rounded-xl border border-sepia bg-sand/20 px-4 py-2.5" placeholder="Family home, Abu Dhabi" /></label>
-                  <label className="block"><span className="mb-1 block text-[9px] font-bold uppercase tracking-wider">Type</span><select value={draft.type} onChange={event => updateDraft('type', event.target.value)} className="w-full rounded-xl border border-sepia bg-sand/20 px-4 py-2.5"><option>Family gathering</option><option>Majlis</option><option>Meal</option><option>Outdoor activity</option><option>Celebration</option><option>Visit</option><option>Phone call</option><option>Video call</option></select></label>
-                  <label className="block"><span className="mb-1 block text-[9px] font-bold uppercase tracking-wider">Notes (optional)</span><textarea maxLength={2000} rows={2} value={draft.notes} onChange={event => updateDraft('notes', event.target.value)} className="w-full resize-none rounded-xl border border-sepia bg-sand/20 px-4 py-2.5" placeholder="Accessibility, food, or arrival details" /></label>
-                  <div><span className="mb-1 block text-[9px] font-bold uppercase tracking-wider">People to invite (optional)</span><MemberPicker members={members} selected={draft.memberIds} onToggle={toggleDraftMember} /></div>
-                  {draft.memberIds.length > 0 ? <label className="block"><span className="mb-1 block text-[9px] font-bold uppercase tracking-wider">Sharing option</span><select value={draft.channel} onChange={event => updateDraft('channel', event.target.value as InvitationChannel)} className="w-full rounded-xl border border-sepia bg-sand/20 px-4 py-2.5"><option value="share_link">Copyable links</option><option value="whatsapp">WhatsApp share buttons</option></select></label> : null}
-                  {saveError ? <p role="alert" className="text-xs text-red-700">{saveError}</p> : null}
-                </div>
-                <footer className="flex justify-end gap-3 border-t border-sepia bg-sand px-6 py-4"><button type="button" onClick={closePlanner} className="px-4 py-2 text-[9px] font-bold uppercase tracking-wider">Cancel</button><button type="submit" className="rounded-xl bg-ink px-5 py-3 text-[9px] font-bold uppercase tracking-widest text-white hover:bg-gold">Review</button></footer>
-              </form>
-            ) : plannerStage === 'review' ? (
-              <div className="flex min-h-0 flex-1 flex-col">
-                <div className="space-y-4 overflow-y-auto p-6">
-                  <div className="rounded-2xl border border-sepia p-5"><h4 className="font-serif text-xl font-bold italic">{draft.title}</h4><p className="mt-1 text-xs text-ink/55">{draft.purpose}</p><div className="mt-4 space-y-2 text-xs"><p className="flex items-center gap-2"><Clock size={14} className="text-gold" /> {formatDubaiDateTime(toDubaiIso(draft.date, draft.time))}</p><p className="flex items-center gap-2"><MapPin size={14} className="text-gold" /> {draft.locationName}</p><p className="flex items-center gap-2"><Users size={14} className="text-gold" /> {draft.memberIds.length ? `${draft.memberIds.length} private RSVP link${draft.memberIds.length === 1 ? '' : 's'} will be prepared` : 'Saved as a draft with no links'}</p></div></div>
-                  {draft.memberIds.length > 0 ? <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-xs text-blue-900"><p className="font-bold">Confirmation required</p><p className="mt-1">Confirming creates the gathering and private links. It does not send a message. You choose which links to copy or open in WhatsApp afterward.</p></div> : null}
-                  {saveError ? <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">{saveError}</p> : null}
-                </div>
-                <footer className="flex justify-end gap-3 border-t border-sepia bg-sand px-6 py-4"><button type="button" disabled={saving || Boolean(savedGathering)} onClick={() => setPlannerStage('details')} className="px-4 py-2 text-[9px] font-bold uppercase tracking-wider disabled:opacity-40">Back</button><button type="button" disabled={saving} onClick={() => void saveAndPrepare()} className="flex items-center gap-2 rounded-xl bg-ink px-5 py-3 text-[9px] font-bold uppercase tracking-widest text-white hover:bg-gold disabled:opacity-50">{saving ? <LoaderCircle className="animate-spin" size={13} /> : <Check size={13} />}{savedGathering ? 'Retry link preparation' : draft.memberIds.length ? 'Create & prepare links' : 'Create draft'}</button></footer>
-              </div>
-            ) : savedGathering && prepared ? (
-              <div className="flex min-h-0 flex-1 flex-col"><div className="overflow-y-auto p-6"><PreparedLinks invitations={prepared.invitations} gathering={savedGathering} deliveryNotice={prepared.deliveryNotice} /></div><footer className="flex justify-end border-t border-sepia bg-sand px-6 py-4"><button type="button" onClick={closePlanner} className="rounded-xl bg-ink px-5 py-3 text-[9px] font-bold uppercase tracking-widest text-white">Done</button></footer></div>
-            ) : null}
+        {activePlanner && activePlanner.familyId === familyId ? (
+          <ModalShell
+            title={plannerStage === 'details'
+              ? 'Plan a gathering'
+              : plannerStage === 'review'
+                ? 'Review before saving'
+                : plannerStage === 'links'
+                  ? 'Invitation links'
+                  : 'Gathering saved'}
+            onClose={closePlanner}
+            closeDisabled={plannerBusy}
+          >
+            <div key={activePlanner.idempotencyKey} className="contents">
+              <GatheringPlanner
+              familyId={familyId}
+              members={members}
+              prefill={activePlanner.prefill}
+              source={activePlanner.source}
+              idempotencyKey={activePlanner.idempotencyKey}
+              initialCreateOutcomeUncertain={Boolean(activePlanner.uncertainCreateOutcome)}
+              sourceLabel={activePlanner.sourceLabel}
+              defaultDate={activePlanner.defaultDate}
+              defaultTime={activePlanner.defaultTime}
+              onCancel={() => {
+                if (
+                  mountedRef.current
+                  && activeFamilyIdRef.current === activePlanner.familyId
+                  && plannerRequestVersionRef.current === activePlanner.requestVersion
+                ) closePlanner();
+              }}
+              onGatheringChanged={(gathering) => {
+                if (
+                  mountedRef.current
+                  && activeFamilyIdRef.current === activePlanner.familyId
+                  && plannerRequestVersionRef.current === activePlanner.requestVersion
+                  && gathering.familyId === activePlanner.familyId
+                ) {
+                  confirmedPlannerKeysRef.current.add(activePlanner.idempotencyKey);
+                  if (manualPlannerRetryRef.current?.idempotencyKey === activePlanner.idempotencyKey) {
+                    manualPlannerRetryRef.current = null;
+                  }
+                  if (activePlanner.source === 'manual' && activePlanner.currentUserId) {
+                    clearManualGatheringRetryState(activePlanner.currentUserId, activePlanner.familyId);
+                  }
+                  upsertGathering(gathering);
+                }
+              }}
+              onViewCalendar={() => {
+                if (
+                  mountedRef.current
+                  && activeFamilyIdRef.current === activePlanner.familyId
+                  && plannerRequestVersionRef.current === activePlanner.requestVersion
+                ) closePlanner();
+              }}
+              onStageChange={(stage) => {
+                if (
+                  mountedRef.current
+                  && activeFamilyIdRef.current === activePlanner.familyId
+                  && plannerRequestVersionRef.current === activePlanner.requestVersion
+                ) setPlannerStage(stage);
+              }}
+              onBusyChange={(busy) => {
+                if (
+                  mountedRef.current
+                  && activeFamilyIdRef.current === activePlanner.familyId
+                  && plannerRequestVersionRef.current === activePlanner.requestVersion
+                ) setPlannerBusy(busy);
+              }}
+              onCreateOutcomeUncertainChange={(uncertain) => {
+                if (
+                  mountedRef.current
+                  && activeFamilyIdRef.current === activePlanner.familyId
+                  && plannerRequestVersionRef.current === activePlanner.requestVersion
+                ) {
+                  if (activePlanner.source === 'manual') {
+                    manualPlannerRetryRef.current = uncertain ? {
+                      familyId: activePlanner.familyId,
+                      currentUserId: activePlanner.currentUserId,
+                      idempotencyKey: activePlanner.idempotencyKey,
+                      uncertainCreateOutcome: true,
+                    } : null;
+                    if (activePlanner.currentUserId) {
+                      if (uncertain) {
+                        writeManualGatheringRetryState(
+                          activePlanner.currentUserId,
+                          activePlanner.familyId,
+                          activePlanner.idempotencyKey,
+                        );
+                      } else {
+                        clearManualGatheringRetryState(activePlanner.currentUserId, activePlanner.familyId);
+                      }
+                    }
+                  }
+                  setActivePlanner(current => (
+                    current?.requestVersion === activePlanner.requestVersion
+                      ? { ...current, uncertainCreateOutcome: uncertain }
+                      : current
+                  ));
+                }
+              }}
+              onDiscardUncertainRetry={activePlanner.source === 'manual' ? discardUncertainManualRetry : undefined}
+              />
+            </div>
           </ModalShell>
         ) : null}
       </AnimatePresence>
 
       <AnimatePresence>
-        {inviteTarget ? (
-          <ModalShell title={inviteStage === 'choose' ? `Invite to ${inviteTarget.title}` : inviteStage === 'review' ? 'Review link preparation' : 'Invitation links'} onClose={closeInviteModal}>
+        {inviteTarget && inviteTarget.familyId === familyId ? (
+          <ModalShell title={inviteStage === 'choose' ? `Invite to ${inviteTarget.title}` : inviteStage === 'review' ? 'Review link preparation' : 'Invitation links'} onClose={closeInviteModal} closeDisabled={inviteBusy}>
             {inviteStage === 'choose' ? (
               <div className="flex min-h-0 flex-1 flex-col"><div className="space-y-4 overflow-y-auto p-6"><p className="text-xs text-ink/60">Select people who should receive a new private RSVP link. Preparing again replaces an existing link for that person.</p><MemberPicker members={members} selected={inviteMemberIds} onToggle={id => setInviteMemberIds(previous => previous.includes(id) ? previous.filter(item => item !== id) : [...previous, id])} /><label className="block"><span className="mb-1 block text-[9px] font-bold uppercase tracking-wider">Sharing option</span><select value={inviteChannel} onChange={event => setInviteChannel(event.target.value as InvitationChannel)} className="w-full rounded-xl border border-sepia bg-sand/20 px-4 py-2.5"><option value="share_link">Copyable links</option><option value="whatsapp">WhatsApp share buttons</option></select></label></div><footer className="flex justify-end gap-3 border-t border-sepia bg-sand px-6 py-4"><button type="button" onClick={closeInviteModal} className="px-4 py-2 text-[9px] font-bold uppercase tracking-wider">Cancel</button><button type="button" disabled={inviteMemberIds.length === 0} onClick={() => setInviteStage('review')} className="rounded-xl bg-ink px-5 py-3 text-[9px] font-bold uppercase tracking-widest text-white disabled:opacity-40">Review</button></footer></div>
             ) : inviteStage === 'review' ? (

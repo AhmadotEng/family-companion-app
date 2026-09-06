@@ -119,6 +119,40 @@ function addUnlinkedRelative(db: AppDatabase, familyId: string, displayName: str
   return memberId;
 }
 
+function addRelationship(
+  db: AppDatabase,
+  familyId: string,
+  sourceMemberId: string,
+  targetMemberId: string,
+  type: "parent" | "spouse" | "sibling" | "guardian" | "relative",
+): string {
+  const relationshipId = randomUUID();
+  db.prepare(
+    `INSERT INTO relationships
+     (id, family_id, source_member_id, target_member_id, type, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(relationshipId, familyId, sourceMemberId, targetMemberId, type, TEST_NOW.toISOString());
+  return relationshipId;
+}
+
+function gatheringPlannerDecision(overrides: Record<string, unknown> = {}) {
+  return {
+    kind: "gathering_planner" as const,
+    message: "The venue is definitely open and perfect.",
+    planner: {
+      title: "Golden Park family outing",
+      purpose: "Spend time together at Golden Park",
+      startAt: "2026-09-12T17:00:00+04:00",
+      timezone: "Asia/Dubai" as const,
+      locationName: "Golden Park",
+      type: "Outdoor activity" as const,
+      memberIds: [],
+      invitationChannel: "share_link" as const,
+      ...overrides,
+    },
+  };
+}
+
 describe("controlled family agent", () => {
   it("requires explicit disclosure consent before calling an external provider", async () => {
     const db = database();
@@ -2179,5 +2213,1805 @@ describe("controlled family agent", () => {
     ]);
     expect(serialized).not.toContain("DO_NOT_DISCLOSE_MEMORY_TITLE");
     expect(serialized).not.toContain("DO_NOT_DISCLOSE_CONTENT");
+  });
+
+  it("requires user-supplied date and Dubai time before returning a planner and performs no domain writes", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "planner-missing-schedule@example.test",
+      displayName: "Ahmad",
+      familyName: "Planner Family",
+    });
+
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, message: "Plan an outing to Golden Park." })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      kind: "clarification",
+      message: expect.stringMatching(/date.*Dubai time/i),
+    });
+    expect(response.body).not.toHaveProperty("planner");
+    for (const table of ["agent_action_proposals", "gatherings", "gathering_invitations", "reconnection_plans", "reward_ledger"]) {
+      expect((db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count, table).toBe(0);
+    }
+  });
+
+  it("asks only for the missing half of the schedule", async () => {
+    for (const [index, message, expected, excluded] of [
+      [0, "Plan Golden Park on September 12, 2026.", /Dubai time/i, /what date/i],
+      [1, "Plan Golden Park at 5 PM.", /what date/i, /Dubai time/i],
+    ] as const) {
+      const db = database();
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `half-schedule-${index}@example.test`,
+        displayName: "Ahmad",
+        familyName: `Half Schedule Family ${index}`,
+      });
+      const response = await browser
+        .post("/api/agent/messages")
+        .send({ familyId: family.familyId, message })
+        .expect(200);
+      expect(response.body).toMatchObject({ kind: "clarification", message: expect.stringMatching(expected) });
+      expect(response.body.message).not.toMatch(excluded);
+    }
+  });
+
+  it("restores the complete multi-turn Golden Park planner and resolves effective parents plus the only sibling", async () => {
+    const db = database();
+    let calls = 0;
+    let secondInput: AgentProviderInput | undefined;
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider((input) => {
+        calls += 1;
+        if (calls === 1) {
+          return { kind: "clarification", message: "What date and Dubai time would you like to visit Golden Park?" };
+        }
+        secondInput = input;
+        return gatheringPlannerDecision();
+      }),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "golden-park-planner@example.test",
+      displayName: "Ahmad Mustafa",
+      familyName: "Mustafa Family",
+    });
+    const dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const momId = addUnlinkedRelative(db, family.familyId, "Mom");
+    const anasId = addUnlinkedRelative(db, family.familyId, "Anas");
+    addRelationship(db, family.familyId, dadId, family.memberId, "parent");
+    addRelationship(db, family.familyId, momId, anasId, "parent");
+    addRelationship(db, family.familyId, family.memberId, anasId, "sibling");
+
+    const first = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "I want to go to Golden Park with my parents and sibling.",
+      })
+      .expect(200);
+    const second = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        sessionId: first.body.sessionId,
+        message: "September 12, 2026 at 5:00 PM.",
+      })
+      .expect(200);
+
+    expect(second.body).toMatchObject({
+      sessionId: first.body.sessionId,
+      messageId: expect.any(String),
+      kind: "gathering_planner",
+      message: expect.stringMatching(/venue has not been verified/i),
+      planner: {
+        title: "Golden Park family outing",
+        purpose: "Spend time together at Golden Park",
+        startAt: "2026-09-12T17:00:00+04:00",
+        timezone: "Asia/Dubai",
+        locationName: "Golden Park",
+        type: "Outdoor activity",
+        memberIds: [dadId, momId, anasId],
+        invitationChannel: "share_link",
+      },
+    });
+    expect(second.body.planner).not.toHaveProperty("notes");
+    expect(secondInput?.history.map((turn) => turn.message)).toEqual([
+      "I want to go to Golden Park with my parents and sibling.",
+      "What date and Dubai time would you like for this gathering?",
+    ]);
+
+    const restored = await browser
+      .get(`/api/agent/sessions/${first.body.sessionId}/messages`)
+      .query({ familyId: family.familyId })
+      .expect(200);
+    expect(restored.body.messages.map((message: { role: string; message: string }) => [message.role, message.message])).toEqual([
+      ["user", "I want to go to Golden Park with my parents and sibling."],
+      ["assistant", "What date and Dubai time would you like for this gathering?"],
+      ["user", "September 12, 2026 at 5:00 PM."],
+      ["assistant", second.body.message],
+    ]);
+    expect(restored.body.messages[3]).toMatchObject({
+      id: second.body.messageId,
+      kind: "gathering_planner",
+      planner: second.body.planner,
+      createdAt: TEST_NOW.toISOString(),
+    });
+    for (const table of ["agent_action_proposals", "gatherings", "gathering_invitations", "reconnection_plans", "reward_ledger"]) {
+      expect((db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count, table).toBe(0);
+    }
+  });
+
+  it("normalizes planner types, deduplicates invitees, and excludes the requester unless explicitly included", async () => {
+    const db = database();
+    let dadId = "";
+    let requesterId = "";
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() =>
+        gatheringPlannerDecision({ type: "outing", memberIds: [dadId, dadId, requesterId] }),
+      ),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "normalized-planner@example.test",
+      displayName: "Ahmad",
+      familyName: "Normalization Family",
+    });
+    requesterId = family.memberId;
+    dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park with Dad on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(response.body.planner).toMatchObject({ type: "Outdoor activity", memberIds: [dadId] });
+
+    const explicitlyIncluded = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park with Dad and me on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(explicitlyIncluded.body.planner.memberIds).toEqual([dadId, requesterId]);
+  });
+
+  it("rejects provider-selected IDs outside the permitted family and rejects past schedules", async () => {
+    for (const [index, decision] of [
+      gatheringPlannerDecision({ memberIds: [randomUUID()] }),
+      gatheringPlannerDecision({ startAt: "2026-08-12T17:00:00+04:00" }),
+    ].entries()) {
+      const db = database();
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => decision),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `invalid-planner-${index}@example.test`,
+        displayName: `Invalid Planner ${index}`,
+        familyName: `Invalid Planner Family ${index}`,
+      });
+      const message =
+        index === 0
+          ? "Plan Golden Park on September 12, 2026 at 5 PM."
+          : "Plan Golden Park on August 12, 2026 at 5 PM.";
+      const response = await browser.post("/api/agent/messages").send({ familyId: family.familyId, message }).expect(502);
+      expect(response.body.error.code).toBe("AGENT_INVALID_ACTION");
+      expect((db.prepare("SELECT COUNT(*) AS count FROM gatherings").get() as { count: number }).count).toBe(0);
+      expect((db.prepare("SELECT COUNT(*) AS count FROM agent_messages").get() as { count: number }).count).toBe(0);
+    }
+  });
+
+  it("does not accept a model-invented schedule that differs from the user's exact Dubai date or time", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "invented-schedule@example.test",
+      displayName: "Ahmad",
+      familyName: "Schedule Family",
+    });
+
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, message: "Plan Golden Park on September 13, 2026 at 6 PM." })
+      .expect(200);
+    expect(response.body).toMatchObject({
+      kind: "clarification",
+      message: expect.stringMatching(/safely match.*exact date and Dubai time/i),
+    });
+    expect(response.body).not.toHaveProperty("planner");
+  });
+
+  it("uses the latest user-supplied schedule when a follow-up replaces an earlier date and time", async () => {
+    const db = database();
+    let calls = 0;
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => {
+        calls += 1;
+        if (calls === 1) return { kind: "clarification", message: "Where would you like to hold this gathering?" };
+        return gatheringPlannerDecision({ startAt: "2026-09-13T18:00:00+04:00" });
+      }),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "replaced-schedule@example.test",
+      displayName: "Ahmad",
+      familyName: "Replacement Family",
+    });
+    const first = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan a family outing on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    const second = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        sessionId: first.body.sessionId,
+        message: "Actually, use Golden Park on September 13, 2026 at 6 PM.",
+      })
+      .expect(200);
+    expect(second.body).toMatchObject({
+      kind: "gathering_planner",
+      planner: { startAt: "2026-09-13T18:00:00+04:00" },
+    });
+  });
+
+  it("asks which singular sibling is intended and accepts a later exact unique name", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "sibling-choice@example.test",
+      displayName: "Ahmad",
+      familyName: "Sibling Family",
+    });
+    const anasId = addUnlinkedRelative(db, family.familyId, "Anas");
+    const omarId = addUnlinkedRelative(db, family.familyId, "Omar");
+    addRelationship(db, family.familyId, family.memberId, anasId, "sibling");
+    addRelationship(db, family.familyId, family.memberId, omarId, "sibling");
+
+    const first = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park with my sibling on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(first.body).toMatchObject({
+      kind: "clarification",
+      message: expect.stringMatching(/which sibling.*Anas.*Omar/i),
+    });
+
+    const second = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, sessionId: first.body.sessionId, message: "Anas" })
+      .expect(200);
+    expect(second.body).toMatchObject({ kind: "gathering_planner", planner: { memberIds: [anasId] } });
+  });
+
+  it("asks which singular parent is intended and accepts a later exact unique name", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "parent-choice@example.test",
+      displayName: "Ahmad",
+      familyName: "Parent Family",
+    });
+    const dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const momId = addUnlinkedRelative(db, family.familyId, "Mom");
+    addRelationship(db, family.familyId, dadId, family.memberId, "parent");
+    addRelationship(db, family.familyId, momId, family.memberId, "parent");
+
+    const first = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park with my parent on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(first.body).toMatchObject({
+      kind: "clarification",
+      message: expect.stringMatching(/which parent.*Dad.*Mom/i),
+    });
+    const second = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, sessionId: first.body.sessionId, message: "Dad" })
+      .expect(200);
+    expect(second.body).toMatchObject({ kind: "gathering_planner", planner: { memberIds: [dadId] } });
+  });
+
+  it("clarifies duplicate and unknown explicit family names instead of inventing an invitee", async () => {
+    for (const [index, names, requestedName, expected] of [
+      [0, ["Sam", "Sam"], "Sam", /multiple matching family profiles/i],
+      [1, ["Known Relative"], "Noura", /couldn't match.*Noura/i],
+    ] as const) {
+      const db = database();
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `name-clarification-${index}@example.test`,
+        displayName: "Ahmad",
+        familyName: `Name Family ${index}`,
+      });
+      names.forEach((name) => addUnlinkedRelative(db, family.familyId, name));
+
+      const response = await browser
+        .post("/api/agent/messages")
+        .send({
+          familyId: family.familyId,
+          message: `Plan Golden Park and invite ${requestedName} on September 12, 2026 at 5 PM.`,
+        })
+        .expect(200);
+      expect(response.body).toMatchObject({ kind: "clarification", message: expect.stringMatching(expected) });
+      expect(response.body).not.toHaveProperty("planner");
+    }
+  });
+
+  it("accepts a latest exact family name after an unknown-name clarification", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "corrected-name@example.test",
+      displayName: "Ahmad",
+      familyName: "Corrected Name Family",
+    });
+    const anasId = addUnlinkedRelative(db, family.familyId, "Anas");
+    const first = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park and invite Noura on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(first.body.kind).toBe("clarification");
+    const second = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, sessionId: first.body.sessionId, message: "Anas" })
+      .expect(200);
+    expect(second.body).toMatchObject({ kind: "gathering_planner", planner: { memberIds: [anasId] } });
+  });
+
+  it("projects full-sibling parents without leaking the other parent to a shared-parent half-sibling", async () => {
+    const db = database();
+    let captured: AgentProviderInput | undefined;
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider((input) => {
+        captured = input;
+        return { kind: "message", message: "Context captured." };
+      }),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "effective-family-context@example.test",
+      displayName: "Ahmad",
+      familyName: "Effective Family",
+    });
+    const dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const momId = addUnlinkedRelative(db, family.familyId, "Mom");
+    const anasId = addUnlinkedRelative(db, family.familyId, "Anas");
+    const leilaId = addUnlinkedRelative(db, family.familyId, "Leila");
+    const guardianId = addUnlinkedRelative(db, family.familyId, "Guardian");
+    addRelationship(db, family.familyId, family.memberId, anasId, "sibling");
+    addRelationship(db, family.familyId, dadId, family.memberId, "parent");
+    addRelationship(db, family.familyId, momId, anasId, "parent");
+    addRelationship(db, family.familyId, dadId, leilaId, "parent");
+    addRelationship(db, family.familyId, dadId, momId, "spouse");
+    addRelationship(db, family.familyId, guardianId, family.memberId, "guardian");
+
+    await browser.post("/api/agent/messages").send({ familyId: family.familyId, message: "Show safe context." }).expect(200);
+    const byMemberId = new Map(captured!.family.effectiveRelationships.map((item) => [item.memberId, item]));
+    expect(byMemberId.get(family.memberId)).toMatchObject({
+      parentMemberIds: [dadId, momId],
+      siblingMemberIds: [anasId, leilaId],
+    });
+    expect(byMemberId.get(anasId)?.parentMemberIds).toEqual([dadId, momId]);
+    expect(byMemberId.get(leilaId)?.parentMemberIds).toEqual([dadId]);
+    expect(byMemberId.get(leilaId)?.parentMemberIds).not.toContain(momId);
+    expect(byMemberId.get(family.memberId)?.parentMemberIds).not.toContain(guardianId);
+  });
+
+  it("resolves spouse and children while never turning a spouse into a parent", async () => {
+    const db = database();
+    let spouseId = "";
+    let childOneId = "";
+    let childTwoId = "";
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() =>
+        gatheringPlannerDecision({ memberIds: [spouseId, childOneId, childTwoId] }),
+      ),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "spouse-children-planner@example.test",
+      displayName: "Ahmad",
+      familyName: "Children Family",
+    });
+    spouseId = addUnlinkedRelative(db, family.familyId, "Spouse");
+    childOneId = addUnlinkedRelative(db, family.familyId, "Child One");
+    childTwoId = addUnlinkedRelative(db, family.familyId, "Child Two");
+    addRelationship(db, family.familyId, family.memberId, spouseId, "spouse");
+    addRelationship(db, family.familyId, family.memberId, childOneId, "parent");
+    addRelationship(db, family.familyId, family.memberId, childTwoId, "parent");
+
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park with my spouse and children on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(response.body).toMatchObject({
+      kind: "gathering_planner",
+      planner: { memberIds: [spouseId, childOneId, childTwoId] },
+    });
+  });
+
+  it("runs the Golden Park planner through explicit idempotent creation and optional link preparation", async () => {
+    const db = database();
+    let calls = 0;
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => {
+        calls += 1;
+        return calls === 1
+          ? { kind: "clarification", message: "What date and Dubai time would you like to visit Golden Park?" }
+          : gatheringPlannerDecision();
+      }),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "golden-park-integration@example.test",
+      displayName: "Ahmad Mustafa",
+      familyName: "Golden Park Integration Family",
+    });
+    const dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const momId = addUnlinkedRelative(db, family.familyId, "Mom");
+    const anasId = addUnlinkedRelative(db, family.familyId, "Anas");
+    addRelationship(db, family.familyId, dadId, family.memberId, "parent");
+    addRelationship(db, family.familyId, momId, family.memberId, "parent");
+    addRelationship(db, family.familyId, family.memberId, anasId, "sibling");
+
+    const clarification = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "I want to go to Golden Park with my parents and sibling.",
+      })
+      .expect(200);
+    const prepared = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        sessionId: clarification.body.sessionId,
+        message: "September 12, 2026 at 5:00 PM.",
+      })
+      .expect(200);
+    expect(prepared.body).toMatchObject({
+      kind: "gathering_planner",
+      messageId: expect.any(String),
+      planner: { memberIds: [dadId, momId, anasId] },
+    });
+
+    // Preparing and reviewing the Assistant form is intentionally non-mutating.
+    expect((db.prepare("SELECT COUNT(*) AS count FROM gatherings").get() as { count: number }).count).toBe(0);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM gathering_invitations").get() as { count: number }).count).toBe(0);
+    const { memberIds, invitationChannel, ...gatheringPayload } = prepared.body.planner as {
+      title: string;
+      purpose: string;
+      startAt: string;
+      timezone: "Asia/Dubai";
+      locationName: string;
+      type: string;
+      notes?: string;
+      memberIds: string[];
+      invitationChannel: "share_link" | "whatsapp";
+    };
+
+    const created = await browser
+      .post(`/api/families/${family.familyId}/gatherings`)
+      .set("Idempotency-Key", prepared.body.messageId)
+      .send(gatheringPayload)
+      .expect(201);
+    expect(created.body.alreadyCreated).toBe(false);
+    const gatheringId = created.body.gathering.id as string;
+    expect((db.prepare("SELECT COUNT(*) AS count FROM gatherings").get() as { count: number }).count).toBe(1);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM gathering_invitations").get() as { count: number }).count).toBe(0);
+
+    const replayed = await browser
+      .post(`/api/families/${family.familyId}/gatherings`)
+      .set("Idempotency-Key", prepared.body.messageId)
+      .send(gatheringPayload)
+      .expect(200);
+    expect(replayed.body).toMatchObject({ alreadyCreated: true, gathering: { id: gatheringId } });
+    expect((db.prepare("SELECT COUNT(*) AS count FROM gatherings").get() as { count: number }).count).toBe(1);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM gathering_invitations").get() as { count: number }).count).toBe(0);
+    expect(
+      (db.prepare("SELECT COUNT(*) AS count FROM audit_events WHERE action = 'gathering.created'").get() as {
+        count: number;
+      }).count,
+    ).toBe(1);
+
+    const links = await browser
+      .post(`/api/gatherings/${gatheringId}/invitations`)
+      .send({ memberIds, channel: invitationChannel })
+      .expect(201);
+    expect(links.body).toMatchObject({
+      deliveryNotice: expect.stringMatching(/has not contacted anyone automatically/i),
+      invitations: [
+        expect.objectContaining({ memberId: dadId, shareUrl: expect.any(String) }),
+        expect.objectContaining({ memberId: momId, shareUrl: expect.any(String) }),
+        expect.objectContaining({ memberId: anasId, shareUrl: expect.any(String) }),
+      ],
+    });
+    expect((db.prepare("SELECT COUNT(*) AS count FROM gathering_invitations").get() as { count: number }).count).toBe(3);
+    expect(
+      (db.prepare("SELECT COUNT(*) AS count FROM audit_events WHERE action = 'gathering.created'").get() as {
+        count: number;
+      }).count,
+    ).toBe(1);
+  });
+
+  it("keeps a singular sibling choice through a later date/time clarification", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "persistent-sibling-choice@example.test",
+      displayName: "Ahmad",
+      familyName: "Persistent Choice Family",
+    });
+    const anasId = addUnlinkedRelative(db, family.familyId, "Anas");
+    const omarId = addUnlinkedRelative(db, family.familyId, "Omar");
+    addRelationship(db, family.familyId, family.memberId, anasId, "sibling");
+    addRelationship(db, family.familyId, family.memberId, omarId, "sibling");
+
+    const chooseSibling = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, message: "Plan Golden Park with my sibling." })
+      .expect(200);
+    expect(chooseSibling.body).toMatchObject({ kind: "clarification", message: expect.stringMatching(/which sibling/i) });
+    const askSchedule = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, sessionId: chooseSibling.body.sessionId, message: "Anas" })
+      .expect(200);
+    expect(askSchedule.body).toMatchObject({ kind: "clarification", message: expect.stringMatching(/date.*Dubai time/i) });
+    const completed = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        sessionId: chooseSibling.body.sessionId,
+        message: "September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(completed.body).toMatchObject({ kind: "gathering_planner", planner: { memberIds: [anasId] } });
+  });
+
+  it("retains independent answers for simultaneous singular parent and sibling ambiguities", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "multiple-singular-choices@example.test",
+      displayName: "Ahmad",
+      familyName: "Multiple Choice Family",
+    });
+    const dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const momId = addUnlinkedRelative(db, family.familyId, "Mom");
+    const anasId = addUnlinkedRelative(db, family.familyId, "Anas");
+    const omarId = addUnlinkedRelative(db, family.familyId, "Omar");
+    addRelationship(db, family.familyId, dadId, family.memberId, "parent");
+    addRelationship(db, family.familyId, momId, family.memberId, "parent");
+    addRelationship(db, family.familyId, family.memberId, anasId, "sibling");
+    addRelationship(db, family.familyId, family.memberId, omarId, "sibling");
+
+    const parentQuestion = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park with my parent and sibling on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(parentQuestion.body.message).toMatch(/which parent/i);
+    const siblingQuestion = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, sessionId: parentQuestion.body.sessionId, message: "Dad" })
+      .expect(200);
+    expect(siblingQuestion.body.message).toMatch(/which sibling/i);
+    const completed = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, sessionId: parentQuestion.body.sessionId, message: "Anas" })
+      .expect(200);
+    expect(completed.body).toMatchObject({ kind: "gathering_planner", planner: { memberIds: [dadId, anasId] } });
+  });
+
+  it("bounds common explicit-name invitation forms without swallowing the venue", async () => {
+    for (const [index, message] of [
+      "Take Dad to Golden Park on September 12, 2026 at 5 PM.",
+      "Go with Dad to Golden Park on September 12, 2026 at 5 PM.",
+    ].entries()) {
+      const db = database();
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `bounded-name-${index}@example.test`,
+        displayName: "Ahmad",
+        familyName: `Bounded Name Family ${index}`,
+      });
+      const dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+      const response = await browser.post("/api/agent/messages").send({ familyId: family.familyId, message }).expect(200);
+      expect(response.body).toMatchObject({ kind: "gathering_planner", planner: { memberIds: [dadId] } });
+    }
+  });
+
+  it("clarifies unknown or duplicate names in event-for-person phrasing", async () => {
+    for (const [index, names, message, expected] of [
+      [0, ["Sam", "Sam"], "Plan a visit for Sam at Golden Park on September 12, 2026 at 5 PM.", /multiple/i],
+      [1, ["Known"], "Dinner for Noura at Golden Park on September 12, 2026 at 5 PM.", /couldn't match.*Noura/i],
+    ] as const) {
+      const db = database();
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `event-for-name-${index}@example.test`,
+        displayName: "Ahmad",
+        familyName: `Event For Family ${index}`,
+      });
+      names.forEach((name) => addUnlinkedRelative(db, family.familyId, name));
+      const response = await browser.post("/api/agent/messages").send({ familyId: family.familyId, message }).expect(200);
+      expect(response.body).toMatchObject({ kind: "clarification", message: expect.stringMatching(expected) });
+    }
+  });
+
+  it("prefers the longest contained full name when family names overlap", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "overlapping-names@example.test",
+      displayName: "Owner",
+      familyName: "Overlapping Names Family",
+    });
+    addUnlinkedRelative(db, family.familyId, "Ahmad");
+    const ahmadMustafaId = addUnlinkedRelative(db, family.familyId, "Ahmad Mustafa");
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park and invite my cousin Ahmad Mustafa on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(response.body).toMatchObject({ kind: "gathering_planner", planner: { memberIds: [ahmadMustafaId] } });
+  });
+
+  it("asks for a missing physical venue and preserves the plan when the user supplies it", async () => {
+    const db = database();
+    let calls = 0;
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => {
+        calls += 1;
+        return gatheringPlannerDecision(calls === 1 ? { type: "Meal" } : { type: "Meal", locationName: "Grandma's house" });
+      }),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "missing-location@example.test",
+      displayName: "Ahmad",
+      familyName: "Location Family",
+    });
+    const dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const where = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, message: "Plan dinner with Dad on September 12, 2026 at 5 PM." })
+      .expect(200);
+    expect(where.body).toMatchObject({ kind: "clarification", message: expect.stringMatching(/where/i) });
+    const completed = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, sessionId: where.body.sessionId, message: "Grandma's house" })
+      .expect(200);
+    expect(completed.body).toMatchObject({
+      kind: "gathering_planner",
+      planner: { locationName: "Grandma's house", memberIds: [dadId] },
+    });
+  });
+
+  it("allows a neutral remote label for video calls without inventing a physical venue", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision({ type: "Video call", locationName: "Online" })),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "video-call-location@example.test",
+      displayName: "Ahmad",
+      familyName: "Video Family",
+    });
+    const dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, message: "Plan a video call with Dad on September 12, 2026 at 5 PM." })
+      .expect(200);
+    expect(response.body).toMatchObject({ kind: "gathering_planner", planner: { locationName: "Online", memberIds: [dadId] } });
+  });
+
+  it("normalizes invitation channel from the user's words rather than the provider preference", async () => {
+    for (const [index, message, providerChannel, expectedChannel] of [
+      [0, "Plan Golden Park on September 12, 2026 at 5 PM.", "whatsapp", "share_link"],
+      [1, "Plan Golden Park on September 12, 2026 at 5 PM and use WhatsApp.", "share_link", "whatsapp"],
+    ] as const) {
+      const db = database();
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => gatheringPlannerDecision({ invitationChannel: providerChannel })),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `planner-channel-${index}@example.test`,
+        displayName: "Ahmad",
+        familyName: `Channel Family ${index}`,
+      });
+      const response = await browser.post("/api/agent/messages").send({ familyId: family.familyId, message }).expect(200);
+      expect(response.body.planner.invitationChannel).toBe(expectedChannel);
+    }
+  });
+
+  it("clarifies ambiguous 12-hour clock text but accepts explicit 24-hour time", async () => {
+    for (const [index, message, shouldOpen] of [
+      [0, "Plan Golden Park on September 12, 2026 at 5:00.", false],
+      [1, "Plan Golden Park on September 12, 2026 at 17:00.", true],
+    ] as const) {
+      const db = database();
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `clock-ambiguity-${index}@example.test`,
+        displayName: "Ahmad",
+        familyName: `Clock Family ${index}`,
+      });
+      const response = await browser.post("/api/agent/messages").send({ familyId: family.familyId, message }).expect(200);
+      if (shouldOpen) expect(response.body.kind).toBe("gathering_planner");
+      else expect(response.body).toMatchObject({ kind: "clarification", message: expect.stringMatching(/AM or PM/i) });
+    }
+  });
+
+  it("rejects judgmental gathering purpose and invented sensitive or ungrounded notes", async () => {
+    for (const [index, overrides, message, expectedCode] of [
+      [
+        0,
+        { purpose: "Help our lonely and estranged dad" },
+        "Plan Golden Park with Dad on September 12, 2026 at 5 PM.",
+        "AGENT_UNSAFE_GATHERING_LANGUAGE",
+      ],
+      [
+        1,
+        { notes: "Bring water because Dad has dementia and feels depressed" },
+        "Plan Golden Park with Dad on September 12, 2026 at 5 PM; bring water.",
+        "AGENT_UNSAFE_GATHERING_LANGUAGE",
+      ],
+      [
+        2,
+        { notes: "Wear blue hats" },
+        "Plan Golden Park with Dad on September 12, 2026 at 5 PM; bring water.",
+        "AGENT_UNGROUNDED_GATHERING_NOTES",
+      ],
+    ] as const) {
+      const db = database();
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => gatheringPlannerDecision(overrides)),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `unsafe-gathering-${index}@example.test`,
+        displayName: "Ahmad",
+        familyName: `Unsafe Gathering Family ${index}`,
+      });
+      addUnlinkedRelative(db, family.familyId, "Dad");
+      const response = await browser.post("/api/agent/messages").send({ familyId: family.familyId, message }).expect(502);
+      expect(response.body.error.code).toBe(expectedCode);
+      expect((db.prepare("SELECT COUNT(*) AS count FROM agent_messages").get() as { count: number }).count).toBe(0);
+    }
+  });
+
+  it("keeps a faithfully grounded free-form note even without a cue keyword", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision({ notes: "Please arrive ten minutes early" })),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "grounded-planner-note@example.test",
+      displayName: "Ahmad",
+      familyName: "Grounded Notes Family",
+    });
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park on September 12, 2026 at 5 PM. Please arrive ten minutes early.",
+      })
+      .expect(200);
+    expect(response.body).toMatchObject({
+      kind: "gathering_planner",
+      planner: { notes: "Please arrive ten minutes early" },
+    });
+  });
+
+  it("preserves an informal tea request across its schedule follow-up", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() =>
+        gatheringPlannerDecision({ title: "Tea at Grandma's house", type: "Meal", locationName: "Grandma's house" }),
+      ),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "informal-tea-request@example.test",
+      displayName: "Ahmad",
+      familyName: "Tea Family",
+    });
+    const dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const first = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, message: "Let's have tea at Grandma's house with Dad." })
+      .expect(200);
+    expect(first.body.message).toMatch(/date.*Dubai time/i);
+    const second = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        sessionId: first.body.sessionId,
+        message: "September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(second.body).toMatchObject({
+      kind: "gathering_planner",
+      planner: { locationName: "Grandma's house", memberIds: [dadId] },
+    });
+  });
+
+  it("rejects a relationship expansion beyond the planner's 200-invitee limit", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "planner-invitee-limit@example.test",
+      displayName: "Ahmad",
+      familyName: "Invitee Limit Family",
+    });
+    for (let index = 0; index < 201; index += 1) {
+      const siblingId = addUnlinkedRelative(db, family.familyId, `Sibling ${String(index).padStart(3, "0")}`);
+      addRelationship(db, family.familyId, family.memberId, siblingId, "sibling");
+    }
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park with my siblings on September 12, 2026 at 5 PM.",
+      })
+      .expect(502);
+    expect(response.body.error.code).toBe("AGENT_INVALID_ACTION");
+    expect((db.prepare("SELECT COUNT(*) AS count FROM agent_messages").get() as { count: number }).count).toBe(0);
+  });
+
+  it("never accepts provider-originated invitees for empty, solo, or object-only requests", async () => {
+    for (const [index, message] of [
+      "Plan Golden Park on September 12, 2026 at 5 PM.",
+      "Plan Golden Park solo on September 12, 2026 at 5 PM.",
+      "Plan Golden Park with nobody on September 12, 2026 at 5 PM.",
+      "Plan Golden Park; bring water on September 12, 2026 at 5 PM.",
+    ].entries()) {
+      const db = database();
+      let dadId = "";
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => gatheringPlannerDecision({ memberIds: [dadId] })),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `no-provider-invitees-${index}@example.test`,
+        displayName: "Ahmad",
+        familyName: `No Provider Invitees ${index}`,
+      });
+      dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+      const response = await browser.post("/api/agent/messages").send({ familyId: family.familyId, message }).expect(200);
+      expect(response.body, message).toMatchObject({ kind: "gathering_planner", planner: { memberIds: [] } });
+    }
+  });
+
+  it("clarifies unresolved invitee wording instead of trusting provider IDs", async () => {
+    const db = database();
+    let dadId = "";
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision({ memberIds: [dadId] })),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "unsupported-invitee@example.test",
+      displayName: "Ahmad",
+      familyName: "Unsupported Invitee Family",
+    });
+    dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park and bring someone on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(response.body).toMatchObject({ kind: "clarification", message: expect.stringMatching(/which family member/i) });
+    expect(response.body).not.toHaveProperty("planner");
+  });
+
+  it("keeps positive invitees in negative-exception wording and excludes negated names", async () => {
+    for (const [index, message, expectedName] of [
+      [0, "Plan Golden Park; invite Dad and no one else on September 12, 2026 at 5 PM.", "Dad"],
+      [1, "Plan Golden Park; nobody except Dad on September 12, 2026 at 5 PM.", "Dad"],
+      [2, "Plan Golden Park with Dad but not Mom on September 12, 2026 at 5 PM.", "Dad"],
+    ] as const) {
+      const db = database();
+      let dadId = "";
+      let momId = "";
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => gatheringPlannerDecision({ memberIds: [dadId, momId] })),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `negative-exception-${index}@example.test`,
+        displayName: "Ahmad",
+        familyName: `Negative Exception Family ${index}`,
+      });
+      dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+      momId = addUnlinkedRelative(db, family.familyId, "Mom");
+      const response = await browser.post("/api/agent/messages").send({ familyId: family.familyId, message }).expect(200);
+      expect(expectedName).toBe("Dad");
+      expect(response.body).toMatchObject({ kind: "gathering_planner", planner: { memberIds: [dadId] } });
+    }
+  });
+
+  it("does not reinterpret purpose, schedule, or attendee counts after 'for' as member names", async () => {
+    for (const [index, phrase] of ["my birthday", "family bonding", "next Saturday", "5 people"].entries()) {
+      const db = database();
+      let dadId = "";
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => gatheringPlannerDecision({ memberIds: [dadId] })),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `non-name-for-${index}@example.test`,
+        displayName: "Ahmad",
+        familyName: `Non Name For Family ${index}`,
+      });
+      dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+      const response = await browser
+        .post("/api/agent/messages")
+        .send({
+          familyId: family.familyId,
+          message: `Plan dinner for ${phrase} at Golden Park on September 12, 2026 at 5 PM.`,
+        })
+        .expect(200);
+      expect(response.body, phrase).toMatchObject({ kind: "gathering_planner", planner: { memberIds: [] } });
+    }
+  });
+
+  it("resolves bring-person wording while leaving bring-object wording out of invitees", async () => {
+    const db = database();
+    let dadId = "";
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision({ memberIds: [dadId] })),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "bring-person@example.test",
+      displayName: "Ahmad",
+      familyName: "Bring Person Family",
+    });
+    dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park and bring Dad on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(response.body).toMatchObject({ kind: "gathering_planner", planner: { memberIds: [dadId] } });
+  });
+
+  it("accumulates multiple explicit-name disambiguations across later prompts", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "multiple-name-corrections@example.test",
+      displayName: "Ahmad",
+      familyName: "Multiple Name Corrections",
+    });
+    const samAhmedId = addUnlinkedRelative(db, family.familyId, "Sam Ahmed");
+    addUnlinkedRelative(db, family.familyId, "Sam Omar");
+    const aliHassanId = addUnlinkedRelative(db, family.familyId, "Ali Hassan");
+    addUnlinkedRelative(db, family.familyId, "Ali Khan");
+
+    const samQuestion = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park and invite Sam and Ali on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(samQuestion.body.message).toMatch(/which Sam/i);
+    const aliQuestion = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, sessionId: samQuestion.body.sessionId, message: "Sam Ahmed" })
+      .expect(200);
+    expect(aliQuestion.body.message).toMatch(/which Ali/i);
+    const completed = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, sessionId: samQuestion.body.sessionId, message: "Ali Hassan" })
+      .expect(200);
+    expect(completed.body).toMatchObject({
+      kind: "gathering_planner",
+      planner: { memberIds: [samAhmedId, aliHassanId] },
+    });
+  });
+
+  it("does not use a general name correction to satisfy an unrelated plural relationship", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "category-isolation@example.test",
+      displayName: "Ahmad",
+      familyName: "Category Isolation Family",
+    });
+    const dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    addUnlinkedRelative(db, family.familyId, "Anas");
+    addRelationship(db, family.familyId, dadId, family.memberId, "parent");
+    const nameQuestion = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park with my parents and Noura on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(nameQuestion.body.message).toMatch(/couldn't match.*Noura/i);
+    const parentQuestion = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, sessionId: nameQuestion.body.sessionId, message: "Anas" })
+      .expect(200);
+    expect(parentQuestion.body).toMatchObject({
+      kind: "clarification",
+      message: expect.stringMatching(/only find one visible parent|which other family member/i),
+    });
+    expect(parentQuestion.body).not.toHaveProperty("planner");
+  });
+
+  it("supports repeated singular relationship choices without forgetting the first answer", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "repeated-sibling-choice@example.test",
+      displayName: "Ahmad",
+      familyName: "Repeated Sibling Choice",
+    });
+    const anasId = addUnlinkedRelative(db, family.familyId, "Anas");
+    const omarId = addUnlinkedRelative(db, family.familyId, "Omar");
+    const aliId = addUnlinkedRelative(db, family.familyId, "Ali");
+    for (const siblingId of [anasId, omarId, aliId]) {
+      addRelationship(db, family.familyId, family.memberId, siblingId, "sibling");
+    }
+    const firstQuestion = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park with my brother and sister on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(firstQuestion.body.message).toMatch(/which siblings/i);
+    const secondQuestion = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, sessionId: firstQuestion.body.sessionId, message: "Anas" })
+      .expect(200);
+    expect(secondQuestion.body.message).toMatch(/which other sibling/i);
+    const completed = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, sessionId: firstQuestion.body.sessionId, message: "Omar" })
+      .expect(200);
+    expect(completed.body).toMatchObject({ kind: "gathering_planner", planner: { memberIds: [anasId, omarId] } });
+  });
+
+  it("caps large disambiguation choice lists", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision()),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "bounded-member-choices@example.test",
+      displayName: "Ahmad",
+      familyName: "Bounded Member Choices",
+    });
+    for (let index = 0; index < 30; index += 1) addUnlinkedRelative(db, family.familyId, "Sam");
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park with Sam on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(response.body).toMatchObject({ kind: "clarification", message: expect.stringMatching(/25 more/i) });
+    expect(response.body.message.length).toBeLessThan(1_000);
+  });
+
+  it("combines an AM/PM-only answer with the previously ambiguous clock time", async () => {
+    for (const [index, answer, startAt] of [
+      [0, "AM", "2026-09-12T05:00:00+04:00"],
+      [1, "PM", "2026-09-12T17:00:00+04:00"],
+    ] as const) {
+      const db = database();
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => gatheringPlannerDecision({ startAt })),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `meridiem-followup-${index}@example.test`,
+        displayName: "Ahmad",
+        familyName: `Meridiem Followup ${index}`,
+      });
+      const question = await browser
+        .post("/api/agent/messages")
+        .send({ familyId: family.familyId, message: "Plan Golden Park on September 12, 2026 at 5:00." })
+        .expect(200);
+      expect(question.body.message).toMatch(/AM or PM/i);
+      const completed = await browser
+        .post("/api/agent/messages")
+        .send({ familyId: family.familyId, sessionId: question.body.sessionId, message: answer })
+        .expect(200);
+      expect(completed.body).toMatchObject({ kind: "gathering_planner", planner: { startAt } });
+    }
+  });
+
+  it("uses one reference instant for provider context and relative-date validation across Dubai midnight", async () => {
+    let currentNow = new Date("2026-09-06T19:59:00.000Z");
+    let contextTime = "";
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider((input) => {
+        contextTime = input.family.currentDateTime;
+        currentNow = new Date("2026-09-06T20:01:00.000Z");
+        return gatheringPlannerDecision({ startAt: "2026-09-07T17:00:00+04:00" });
+      }),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => currentNow,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "midnight-reference@example.test",
+      displayName: "Ahmad",
+      familyName: "Midnight Reference Family",
+    });
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, message: "Plan Golden Park tomorrow at 5 PM." })
+      .expect(200);
+    expect(contextTime).toBe("2026-09-06T19:59:00.000Z");
+    expect(response.body).toMatchObject({
+      kind: "gathering_planner",
+      planner: { startAt: "2026-09-07T17:00:00+04:00" },
+    });
+  });
+
+  it("replaces stale gathering facts when the user clearly starts a new plan during clarification", async () => {
+    const db = database();
+    let calls = 0;
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => {
+        calls += 1;
+        return gatheringPlannerDecision(
+          calls === 1
+            ? {}
+            : {
+                startAt: "2026-08-14T12:00:00+04:00",
+                locationName: "Home",
+                type: "Meal",
+              },
+        );
+      }),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "replacement-plan@example.test",
+      displayName: "Ahmad",
+      familyName: "Replacement Plan Family",
+    });
+    const dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const momId = addUnlinkedRelative(db, family.familyId, "Mom");
+    const question = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, message: "Plan Golden Park with Dad." })
+      .expect(200);
+    expect(question.body.message).toMatch(/date.*Dubai time/i);
+    const completed = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        sessionId: question.body.sessionId,
+        message: "Actually, plan lunch at Home tomorrow at noon with Mom instead.",
+      })
+      .expect(200);
+    expect(completed.body).toMatchObject({
+      kind: "gathering_planner",
+      planner: {
+        startAt: "2026-08-14T12:00:00+04:00",
+        locationName: "Home",
+        type: "Meal",
+        memberIds: [momId],
+      },
+    });
+    expect(completed.body.planner.memberIds).not.toContain(dadId);
+  });
+
+  it("does not let a provider remote type bypass a missing physical location", async () => {
+    const db = database();
+    let dadId = "";
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() =>
+        gatheringPlannerDecision({ type: "Phone call", locationName: "Online", memberIds: [dadId] }),
+      ),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "remote-type-bypass@example.test",
+      displayName: "Ahmad",
+      familyName: "Remote Type Bypass Family",
+    });
+    dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, message: "Plan dinner with Dad on September 12, 2026 at 5 PM." })
+      .expect(200);
+    expect(response.body).toMatchObject({ kind: "clarification", message: expect.stringMatching(/where/i) });
+    expect(response.body).not.toHaveProperty("planner");
+  });
+
+  it("derives neutral planner copy instead of surfacing innocuous invented title or purpose facts", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() =>
+        gatheringPlannerDecision({
+          title: "Ahmad's birthday celebration",
+          purpose: "Celebrate Ahmad's promotion",
+        }),
+      ),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "deterministic-planner-copy@example.test",
+      displayName: "Ahmad",
+      familyName: "Deterministic Planner Copy",
+    });
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({ familyId: family.familyId, message: "Plan Golden Park on September 12, 2026 at 5 PM." })
+      .expect(200);
+    expect(response.body).toMatchObject({
+      kind: "gathering_planner",
+      planner: {
+        title: "Golden Park family outing",
+        purpose: "Spend time together at Golden Park",
+      },
+    });
+  });
+
+  it("omits unsupported notes, rejects reversed negation, and preserves exact user-supplied notes", async () => {
+    for (const [index, requestMessage, providerNote, expectedStatus, expectedNote] of [
+      [
+        0,
+        "Plan Golden Park on September 12, 2026 at 5 PM.",
+        "Wear blue hats",
+        200,
+        undefined,
+      ],
+      [
+        1,
+        "Plan Golden Park on September 12, 2026 at 5 PM. Do not bring peanuts.",
+        "Bring peanuts",
+        502,
+        undefined,
+      ],
+      [
+        2,
+        "Plan Golden Park on September 12, 2026 at 5 PM. Do not bring peanuts.",
+        "Do not bring peanuts",
+        200,
+        "Do not bring peanuts",
+      ],
+      [
+        3,
+        "Plan Golden Park with Dad on September 12, 2026 at 5 PM. Dad has diabetes; bring sugar-free food.",
+        "Dad has diabetes; bring sugar-free food",
+        200,
+        "Dad has diabetes; bring sugar-free food",
+      ],
+      [
+        4,
+        "Plan Golden Park on September 12, 2026 at 5 PM.",
+        "Golden Park",
+        200,
+        undefined,
+      ],
+      [
+        5,
+        "Plan Golden Park on September 12, 2026 at 5 PM. Do not ever bring peanuts.",
+        "Bring peanuts",
+        502,
+        undefined,
+      ],
+      [
+        6,
+        "Plan Golden Park on September 12, 2026 at 5 PM. Bring water.",
+        "Golden Park",
+        502,
+        undefined,
+      ],
+      [
+        7,
+        "Plan at Golden Park and bring water on September 12, 2026 at 5 PM.",
+        "Golden Park",
+        502,
+        undefined,
+      ],
+      [
+        8,
+        "Plan Golden Park on September 12, 2026 at 5 PM. Bring water.",
+        "Water",
+        200,
+        "Water",
+      ],
+      [
+        9,
+        "Plan Golden Park on September 12, 2026 at 5 PM. Medical note: diabetes.",
+        "Diabetes",
+        200,
+        "Diabetes",
+      ],
+    ] as const) {
+      const db = database();
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => gatheringPlannerDecision({ notes: providerNote })),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `planner-note-grounding-${index}@example.test`,
+        displayName: "Ahmad",
+        familyName: `Planner Note Grounding ${index}`,
+      });
+      if (index === 3) addUnlinkedRelative(db, family.familyId, "Dad");
+      const response = await browser
+        .post("/api/agent/messages")
+        .send({ familyId: family.familyId, message: requestMessage })
+        .expect(expectedStatus);
+      if (expectedStatus === 502) {
+        expect(response.body.error.code).toBe("AGENT_UNGROUNDED_GATHERING_NOTES");
+      } else if (expectedNote) {
+        expect(response.body.planner.notes).toBe(expectedNote);
+      } else {
+        expect(response.body.planner).not.toHaveProperty("notes");
+      }
+    }
+  });
+
+  it("requires an explicit positive WhatsApp request", async () => {
+    for (const [index, wording] of [
+      "WhatsApp is not needed",
+      "without WhatsApp",
+      "anything except WhatsApp",
+      "avoid WhatsApp",
+      "WhatsApp is useful",
+    ].entries()) {
+      const db = database();
+      const app = createApp({
+        database: db,
+        agentProvider: callbackProvider(() => gatheringPlannerDecision({ invitationChannel: "whatsapp" })),
+        bcryptRounds: 4,
+        rateLimitEnabled: false,
+        now: () => TEST_NOW,
+      });
+      const browser = request.agent(app);
+      const family = await register(browser, db, {
+        email: `whatsapp-opt-in-${index}@example.test`,
+        displayName: "Ahmad",
+        familyName: `WhatsApp Opt In ${index}`,
+      });
+      const response = await browser
+        .post("/api/agent/messages")
+        .send({
+          familyId: family.familyId,
+          message: `Plan Golden Park on September 12, 2026 at 5 PM. ${wording}.`,
+        })
+        .expect(200);
+      expect(response.body.planner.invitationChannel).toBe("share_link");
+    }
+  });
+
+  it("ends invitee clauses at a named date even when the user omits 'on'", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() =>
+        gatheringPlannerDecision({
+          startAt: "2099-09-12T17:00:00+04:00",
+          locationName: "Home",
+          type: "Meal",
+        }),
+      ),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "date-bounded-invitees@example.test",
+      displayName: "Ahmad",
+      familyName: "Date Bounded Invitees",
+    });
+    const dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const momId = addUnlinkedRelative(db, family.familyId, "Mom");
+    addRelationship(db, family.familyId, dadId, family.memberId, "parent");
+    addRelationship(db, family.familyId, momId, family.memberId, "parent");
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan dinner at Home with my parents September 12 2099 at 5 PM.",
+      })
+      .expect(200);
+    expect(response.body.kind).toBe("gathering_planner");
+    expect(response.body.planner.memberIds).toHaveLength(2);
+    expect(response.body.planner.memberIds).toEqual(expect.arrayContaining([dadId, momId]));
+  });
+
+  it("uses a safe deterministic type when the request contains no recognized type keyword", async () => {
+    const db = database();
+    let dadId = "";
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() =>
+        gatheringPlannerDecision({ type: "Celebration", locationName: "Office", memberIds: [dadId] }),
+      ),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "deterministic-default-type@example.test",
+      displayName: "Ahmad",
+      familyName: "Deterministic Default Type",
+    });
+    dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Meet Dad at Office on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+    expect(response.body).toMatchObject({
+      kind: "gathering_planner",
+      planner: { type: "Family gathering", locationName: "Office", memberIds: [dadId] },
+    });
+  });
+
+  it("keeps accessibility details introduced by 'with' as notes rather than invitees", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() => gatheringPlannerDecision({ notes: "Wheelchair access" })),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "wheelchair-detail-not-invitee@example.test",
+      displayName: "Ahmad",
+      familyName: "Accessibility Detail",
+    });
+
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan Golden Park with wheelchair access on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      kind: "gathering_planner",
+      planner: { memberIds: [], notes: "Wheelchair access" },
+    });
+  });
+
+  it("keeps common dietary details introduced by 'with' as notes rather than invitees", async () => {
+    const db = database();
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() =>
+        gatheringPlannerDecision({
+          startAt: "2099-09-12T17:00:00+04:00",
+          locationName: "Home",
+          type: "Meal",
+          notes: "Halal food",
+        }),
+      ),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "dietary-detail-not-invitee@example.test",
+      displayName: "Ahmad",
+      familyName: "Dietary Detail",
+    });
+
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Plan dinner at Home with halal food on September 12, 2099 at 5 PM.",
+      })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      kind: "gathering_planner",
+      planner: { type: "Meal", memberIds: [], notes: "Halal food" },
+    });
+  });
+
+  it("does not accept a provider venue that is only a prefix of the user's venue", async () => {
+    const db = database();
+    let dadId = "";
+    const app = createApp({
+      database: db,
+      agentProvider: callbackProvider(() =>
+        gatheringPlannerDecision({ locationName: "Golden", memberIds: [dadId] }),
+      ),
+      bcryptRounds: 4,
+      rateLimitEnabled: false,
+      now: () => TEST_NOW,
+    });
+    const browser = request.agent(app);
+    const family = await register(browser, db, {
+      email: "venue-prefix-grounding@example.test",
+      displayName: "Ahmad",
+      familyName: "Venue Prefix Grounding",
+    });
+    dadId = addUnlinkedRelative(db, family.familyId, "Dad");
+
+    const response = await browser
+      .post("/api/agent/messages")
+      .send({
+        familyId: family.familyId,
+        message: "Go to Golden Park with Dad on September 12, 2026 at 5 PM.",
+      })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      kind: "clarification",
+      message: "Where would you like to hold this gathering?",
+    });
+    expect(response.body).not.toHaveProperty("planner");
   });
 });

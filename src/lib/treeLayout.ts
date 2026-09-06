@@ -12,7 +12,7 @@ export interface ConnectionLine {
   y1: number;
   x2: number;
   y2: number;
-  type: 'parent-child' | 'spouse' | 'sibling-hub';
+  type: 'parent-child' | 'spouse' | 'sibling-hub' | 'relative';
   curve?: number;
   heartX?: number;
   heartY?: number;
@@ -36,6 +36,7 @@ export function computeTreeLayout(members: FamilyMember[], rootId: string = 'm1'
   const spouseOffset = 1.2;
   const extraSpouseHeartOffset = 0.4;
   const siblingOffset = 1.25;
+  const relativeOffset = 1.4;
 
   const positions = new Map<string, { x: number, y: number }>();
   const visited = new Set<string>();
@@ -103,6 +104,14 @@ export function computeTreeLayout(members: FamilyMember[], rootId: string = 'm1'
           queue.push({ id: siblingId, targetX: x + direction * distance, targetY });
         });
       }
+
+      member.relativeIds?.forEach((relativeId, index) => {
+        if (visited.has(relativeId)) return;
+
+        const direction = index % 2 === 0 ? 1 : -1;
+        const distance = Math.ceil((index + 1) / 2) * relativeOffset;
+        queue.push({ id: relativeId, targetX: x + direction * distance, targetY });
+      });
 
       if (member.parentIds && member.parentIds.length > 0) {
         const parentCount = member.parentIds.length;
@@ -177,6 +186,7 @@ export function generateConnections(nodes: LayoutNode[], X_SPACING: number, Y_SP
   const lines: ConnectionLine[] = [];
   const nodeMap = new Map(nodes.map(n => [n.member.id, n]));
   const spouseLineKeys = new Set<string>();
+  const relativeLineKeys = new Set<string>();
   const parentMap = new Map<string, LayoutNode[]>();
   const extraSpouseHeartOffset = X_SPACING * 0.4;
 
@@ -232,6 +242,26 @@ export function generateConnections(nodes: LayoutNode[], X_SPACING: number, Y_SP
         heartX,
         heartY,
         type: 'spouse'
+      });
+    });
+
+    m.relativeIds?.forEach(relativeId => {
+      const relative = nodeMap.get(relativeId);
+      if (!relative) return;
+
+      const relativeKey = [m.id, relative.member.id].sort().join('-');
+      if (relativeLineKeys.has(relativeKey)) return;
+      relativeLineKeys.add(relativeKey);
+
+      const left = node.x <= relative.x ? node : relative;
+      const right = left.member.id === node.member.id ? relative : node;
+      lines.push({
+        id: `relative-${relativeKey}`,
+        x1: left.x * X_SPACING,
+        y1: left.y * Y_SPACING,
+        x2: right.x * X_SPACING,
+        y2: right.y * Y_SPACING,
+        type: 'relative'
       });
     });
 

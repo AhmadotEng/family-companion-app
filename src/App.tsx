@@ -3,14 +3,18 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LoaderCircle, LogOut, RefreshCw, ShieldAlert } from 'lucide-react';
 import { Layout } from './components/Layout';
 import { Home } from './screens/Home';
-import { Assistant } from './screens/Assistant';
+import {
+  Assistant,
+  clearStoredAgentSessions,
+  type AgentResultNavigationTarget,
+} from './screens/Assistant';
 import { Activities } from './screens/Activities';
 import { FamilyTree } from './screens/FamilyTree';
-import { Calendar } from './screens/Calendar';
+import { Calendar, type CalendarFocusTarget } from './screens/Calendar';
 import { MemoriesRewards } from './screens/MemoriesRewards';
 import { More } from './screens/More';
 import { PublicInvitationScreen } from './screens/PublicInvitation';
@@ -23,6 +27,7 @@ import type { PersistentGathering } from './engagementTypes';
 import { formatDubaiDateKey } from './lib/gatheringDate';
 import { invitationTokenFromPath, isInvitationPath } from './lib/invitationRoute';
 import { getAgentResultDestination } from './lib/agentPresentation';
+import { clearAllManualGatheringRetryStates } from './lib/manualGatheringRetry';
 import type { AgentActionCompletion } from './screens/Assistant';
 import { AuthSession, FamilyContext, FamilyMember, Gathering } from './types';
 
@@ -78,12 +83,45 @@ function AuthenticatedApp() {
   const [assistantPreset, setAssistantPreset] = useState('');
   const [gatheringPlanPrefill, setGatheringPlanPrefill] = useState<GatheringPlanPrefill | null>(null);
   const [calendarRefreshVersion, setCalendarRefreshVersion] = useState(0);
+  const [calendarFocusTarget, setCalendarFocusTarget] = useState<CalendarFocusTarget | null>(null);
   const [archiveRefreshVersion, setArchiveRefreshVersion] = useState(0);
   const [booting, setBooting] = useState(true);
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState('');
+  const mountedRef = useRef(false);
+  const contextEpochRef = useRef(0);
+  const activeFamilyIdRef = useRef<string | null>(activeFamilyId);
+  const activeUserIdRef = useRef<string | null>(session?.user.id ?? null);
+  const familyLoadRequestVersionRef = useRef(0);
+  const gatheringRefreshRequestVersionRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      contextEpochRef.current += 1;
+      familyLoadRequestVersionRef.current += 1;
+      gatheringRefreshRequestVersionRef.current += 1;
+    };
+  }, []);
+
+  const isCurrentAppContext = useCallback((
+    expectedEpoch: number,
+    expectedFamilyId: string,
+    expectedUserId: string,
+  ) => mountedRef.current
+    && contextEpochRef.current === expectedEpoch
+    && activeFamilyIdRef.current === expectedFamilyId
+    && activeUserIdRef.current === expectedUserId, []);
 
   const loadFamily = useCallback(async (familyId: string) => {
+    const expectedEpoch = contextEpochRef.current;
+    const expectedUserId = activeUserIdRef.current;
+    if (!expectedUserId || activeFamilyIdRef.current !== familyId) return;
+    const requestVersion = ++familyLoadRequestVersionRef.current;
+    const gatheringRequestVersion = ++gatheringRefreshRequestVersionRef.current;
+    const isCurrentRequest = () => isCurrentAppContext(expectedEpoch, familyId, expectedUserId)
+      && familyLoadRequestVersionRef.current === requestVersion;
     setContextLoading(true);
     setContextError('');
     try {
@@ -92,9 +130,11 @@ function AuthenticatedApp() {
         engagementApi.listGatherings(familyId),
       ]);
       if (contextResult.status === 'rejected') throw contextResult.reason;
+      if (!isCurrentRequest()) return;
       const context = contextResult.value;
       setFamilyContext(context);
       setMembers(adaptFamilyContext(context));
+      if (gatheringRefreshRequestVersionRef.current !== gatheringRequestVersion) return;
       if (gatheringResult.status === 'fulfilled') {
         setPersistentGatherings(gatheringResult.value.gatherings);
       } else {
@@ -106,19 +146,33 @@ function AuthenticatedApp() {
         );
       }
     } catch (caught) {
+      if (!isCurrentRequest()) return;
       setFamilyContext(null);
       setMembers([]);
+      setPersistentGatherings([]);
       setContextError(caught instanceof ApiError ? caught.message : 'Unable to load this family space.');
     } finally {
-      setContextLoading(false);
+      if (isCurrentRequest()) setContextLoading(false);
     }
-  }, []);
+  }, [isCurrentAppContext]);
 
   const acceptSession = useCallback(async (nextSession: AuthSession) => {
-    setSession(nextSession);
+    const expectedEpoch = ++contextEpochRef.current;
+    familyLoadRequestVersionRef.current += 1;
+    gatheringRefreshRequestVersionRef.current += 1;
     const familyId = nextSession.activeFamilyId || nextSession.families[0]?.id || null;
+    activeUserIdRef.current = nextSession.user.id;
+    activeFamilyIdRef.current = familyId;
+    setSession(nextSession);
+    setCalendarFocusTarget(null);
     setActiveFamilyId(familyId);
+    setFamilyContext(null);
+    setMembers([]);
+    setPersistentGatherings([]);
+    setContextError('');
     if (familyId) await loadFamily(familyId);
+    else setContextLoading(false);
+    return expectedEpoch;
   }, [loadFamily]);
 
   useEffect(() => {
@@ -147,53 +201,83 @@ function AuthenticatedApp() {
   }, [activeFamilyId, loadFamily]);
 
   const handleAgentActionCompleted = useCallback(async ({ resources }: AgentActionCompletion) => {
-    if (!activeFamilyId) return;
+    const expectedFamilyId = activeFamilyIdRef.current;
+    const expectedUserId = activeUserIdRef.current;
+    const expectedEpoch = contextEpochRef.current;
+    if (!expectedFamilyId || !expectedUserId) return;
+    const isCurrentRequest = () => isCurrentAppContext(expectedEpoch, expectedFamilyId, expectedUserId);
 
     if (resources.includes('family')) {
-      await loadFamily(activeFamilyId);
+      await loadFamily(expectedFamilyId);
+      if (!isCurrentRequest()) return;
     } else if (resources.includes('gatherings')) {
+      const requestVersion = ++gatheringRefreshRequestVersionRef.current;
       try {
-        const result = await engagementApi.listGatherings(activeFamilyId);
+        const result = await engagementApi.listGatherings(expectedFamilyId);
+        if (!isCurrentRequest() || gatheringRefreshRequestVersionRef.current !== requestVersion) return;
         setPersistentGatherings(result.gatherings);
       } catch (caught) {
+        if (!isCurrentRequest() || gatheringRefreshRequestVersionRef.current !== requestVersion) return;
         setContextError(caught instanceof ApiError
           ? `The action completed, but gatherings could not refresh: ${caught.message}`
           : 'The action completed, but gatherings could not refresh.');
       }
     }
 
+    if (!isCurrentRequest()) return;
     if (resources.includes('gatherings')) {
       setCalendarRefreshVersion((current) => current + 1);
     }
     if (resources.includes('memories') || resources.includes('rewards')) {
       setArchiveRefreshVersion((current) => current + 1);
     }
-  }, [activeFamilyId, loadFamily]);
+  }, [isCurrentAppContext, loadFamily]);
 
-  const navigateToAgentActionResult = useCallback((actionType: string) => {
+  const navigateToAgentActionResult = useCallback((
+    actionType: string,
+    target?: AgentResultNavigationTarget,
+  ) => {
     const destination = getAgentResultDestination(actionType);
+    if (destination === 'calendar' && activeFamilyId && target?.startAt) {
+      setCalendarFocusTarget({
+        familyId: activeFamilyId,
+        ...(target.gatheringId ? { gatheringId: target.gatheringId } : {}),
+        startAt: target.startAt,
+      });
+    }
     if (destination) setActiveTab(destination);
-  }, []);
+  }, [activeFamilyId]);
 
   const handleAuthenticated = async (nextSession: AuthSession) => {
     setBooting(true);
+    let expectedEpoch = contextEpochRef.current;
     try {
-      await acceptSession(nextSession);
+      expectedEpoch = await acceptSession(nextSession);
     } finally {
-      setBooting(false);
+      if (mountedRef.current && contextEpochRef.current === expectedEpoch) setBooting(false);
     }
   };
 
   const handleLogout = async () => {
+    contextEpochRef.current += 1;
+    familyLoadRequestVersionRef.current += 1;
+    gatheringRefreshRequestVersionRef.current += 1;
+    activeUserIdRef.current = null;
+    activeFamilyIdRef.current = null;
+    clearAllManualGatheringRetryStates();
     try {
       await authApi.logout();
     } finally {
+      clearStoredAgentSessions();
       setSession(null);
       setActiveFamilyId(null);
       setFamilyContext(null);
       setMembers([]);
       setPersistentGatherings([]);
       setGatheringPlanPrefill(null);
+      setCalendarFocusTarget(null);
+      setContextLoading(false);
+      setContextError('');
       setActiveTab('home');
     }
   };
@@ -204,6 +288,7 @@ function AuthenticatedApp() {
   };
 
   const openGatheringDraftFromPlan = useCallback((prefill: GatheringPlanPrefill) => {
+    setCalendarFocusTarget(null);
     setGatheringPlanPrefill(prefill);
     setActiveTab('calendar');
   }, []);
@@ -258,6 +343,7 @@ function AuthenticatedApp() {
             onPlanPrefillConsumed={clearGatheringPlanPrefill}
             onGatheringsChanged={setPersistentGatherings}
             refreshVersion={calendarRefreshVersion}
+            focusTarget={calendarFocusTarget}
           />
         );
       case 'archive':
@@ -275,7 +361,7 @@ function AuthenticatedApp() {
       default:
         return null;
     }
-  }, [activeTab, archiveRefreshVersion, assistantPreset, calendarRefreshVersion, clearGatheringPlanPrefill, currentFamilyId, currentMemberId, familyContext?.family.name, familyContext?.family.role, gatheringPlanPrefill, handleAgentActionCompleted, homeGatherings, members, navigateToAgentActionResult, openGatheringDraftFromPlan, refreshContext, session]);
+  }, [activeTab, archiveRefreshVersion, assistantPreset, calendarFocusTarget, calendarRefreshVersion, clearGatheringPlanPrefill, currentFamilyId, currentMemberId, familyContext?.family.name, familyContext?.family.role, gatheringPlanPrefill, handleAgentActionCompleted, homeGatherings, members, navigateToAgentActionResult, openGatheringDraftFromPlan, refreshContext, session]);
 
   if (booting) return <FullPageStatus message="Opening your private family space…" />;
   if (!session) return <AuthScreen onAuthenticated={handleAuthenticated} />;

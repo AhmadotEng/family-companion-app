@@ -101,6 +101,7 @@ export interface FamilyMember {
   childrenIds?: string[];
   siblingIds?: string[];
   siblingGroupId?: string;
+  relativeIds?: string[];
   familyBranch?: string;
   memories?: string[];
   generation?: number;

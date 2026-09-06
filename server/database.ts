@@ -4,9 +4,11 @@ import path from "node:path";
 import {
   AGENT_ACTION_PARITY_MIGRATION_SQL,
   AGENT_ENGAGEMENT_ACTION_PARITY_MIGRATION_SQL,
+  AGENT_GATHERING_PLANNER_MESSAGE_MIGRATION_SQL,
   AGENT_SCHEMA_MIGRATION_SQL,
 } from "./agentSchema.js";
 import { ENGAGEMENT_SCHEMA_SQL, ENGAGEMENT_SEED_SQL } from "./engagement.js";
+import { GATHERING_CREATION_IDEMPOTENCY_MIGRATION_SQL } from "./gatheringIdempotency.js";
 
 export type AppDatabase = Database.Database;
 
@@ -161,6 +163,16 @@ const migrations: Migration[] = [
     version: 6,
     name: "agent_engagement_action_parity",
     sql: AGENT_ENGAGEMENT_ACTION_PARITY_MIGRATION_SQL,
+  },
+  {
+    version: 7,
+    name: "agent_gathering_planner_messages",
+    sql: AGENT_GATHERING_PLANNER_MESSAGE_MIGRATION_SQL,
+  },
+  {
+    version: 8,
+    name: "gathering_creation_idempotency",
+    sql: GATHERING_CREATION_IDEMPOTENCY_MIGRATION_SQL,
   },
 ];
 

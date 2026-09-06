@@ -1,4 +1,5 @@
 import type { ReconnectionPlan } from '../engagementTypes';
+import type { GatheringPlannerPrefill } from '../lib/gatheringPlanner';
 import { apiRequest } from './client';
 
 export type ReconnectionPlanUpdateStatus = 'accepted' | 'dismissed' | 'completed';
@@ -7,15 +8,9 @@ export type ReconnectionPlanUpdateStatus = 'accepted' | 'dismissed' | 'completed
  * A local, editable hand-off from an AI-assisted plan to the calendar. Passing
  * this object does not create a gathering, send invitations, or update a plan.
  */
-export interface GatheringPlanPrefill {
+export interface GatheringPlanPrefill extends GatheringPlannerPrefill {
   sourcePlanId: string;
   sourcePlanTitle: string;
-  title: string;
-  purpose: string;
-  type: string;
-  locationName: string;
-  notes: string;
-  memberIds: string[];
 }
 
 const gatheringTypeByFormat: Record<ReconnectionPlan['suggestedGathering']['format'], string> = {

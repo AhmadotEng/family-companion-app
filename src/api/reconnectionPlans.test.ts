@@ -32,6 +32,37 @@ const plan: ReconnectionPlan = {
 };
 
 describe('reconnection plan calendar hand-off', () => {
+  it.each([
+    ['home_visit', 'Visit', ''],
+    ['phone_call', 'Phone call', 'Phone call'],
+    ['video_call', 'Video call', 'Video call'],
+    ['family_meal', 'Meal', ''],
+    ['outing', 'Outdoor activity', ''],
+    ['other', 'Family gathering', ''],
+  ] as const)('maps %s to the Calendar type %s and safe default location', (format, type, locationName) => {
+    const prefill = reconnectionPlanToGatheringPrefill({
+      ...plan,
+      suggestedGathering: { ...plan.suggestedGathering, format },
+    });
+
+    expect(prefill.type).toBe(type);
+    expect(prefill.locationName).toBe(locationName);
+    expect(prefill).not.toHaveProperty('startAt');
+  });
+
+  it('prefers explicit location guidance over a format default', () => {
+    const prefill = reconnectionPlanToGatheringPrefill({
+      ...plan,
+      suggestedGathering: {
+        ...plan.suggestedGathering,
+        format: 'video_call',
+        locationGuidance: 'Private family video room',
+      },
+    });
+
+    expect(prefill.locationName).toBe('Private family video room');
+  });
+
   it('maps only explicit plan guidance and leaves scheduling for user review', () => {
     expect(reconnectionPlanToGatheringPrefill(plan)).toEqual({
       sourcePlanId: 'plan-id',

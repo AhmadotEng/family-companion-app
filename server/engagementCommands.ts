@@ -66,6 +66,30 @@ export type CompleteGatheringInput = z.infer<typeof completeGatheringSchema>;
 export type CreateMemoryInput = z.infer<typeof createMemorySchema>;
 export type UpdatePlanStatusInput = z.infer<typeof updatePlanStatusSchema>;
 
+export type ReconnectionPlanStatus = "active" | UpdatePlanStatusInput["status"];
+
+const RECONNECTION_PLAN_STATUS_TRANSITIONS: Record<
+  ReconnectionPlanStatus,
+  readonly UpdatePlanStatusInput["status"][]
+> = {
+  active: ["accepted", "dismissed"],
+  accepted: ["dismissed", "completed"],
+  dismissed: ["accepted"],
+  completed: [],
+};
+
+export function assertReconnectionPlanStatusTransition(
+  currentStatus: ReconnectionPlanStatus,
+  nextStatus: UpdatePlanStatusInput["status"],
+): void {
+  if (RECONNECTION_PLAN_STATUS_TRANSITIONS[currentStatus].includes(nextStatus)) return;
+  throw new HttpError(
+    409,
+    "INVALID_PLAN_STATUS_TRANSITION",
+    `A ${currentStatus} reconnection plan cannot be changed to ${nextStatus}.`,
+  );
+}
+
 type GatheringStatus = "draft" | "inviting" | "completed" | "cancelled";
 
 interface GatheringRow {
@@ -112,6 +136,23 @@ function requireGatheringManager(database: AppDatabase, row: GatheringRow, actor
   const membership = getMembership(database, row.family_id, actorUserId);
   if (row.created_by_user_id !== actorUserId && membership.role === "member") {
     throw new HttpError(403, "INSUFFICIENT_ROLE", "Only the gathering creator or a family administrator can do that.");
+  }
+}
+
+function requireGatheringVisibleForMemory(database: AppDatabase, row: GatheringRow, actorUserId: string): void {
+  const membership = getMembership(database, row.family_id, actorUserId);
+  if (row.created_by_user_id === actorUserId || membership.role !== "member") return;
+  const invited = membership.linkedMemberId
+    ? database
+        .prepare("SELECT 1 FROM gathering_invitations WHERE gathering_id = ? AND member_id = ? LIMIT 1")
+        .get(row.id, membership.linkedMemberId)
+    : undefined;
+  if (!invited) {
+    throw new HttpError(
+      403,
+      "GATHERING_ACCESS_REQUIRED",
+      "Only the gathering creator, an invited family member, or a family administrator may add a memory.",
+    );
   }
 }
 
@@ -367,7 +408,7 @@ export function createMemory(
 ): { memoryId: string; memoryType: CreateMemoryInput["memoryType"] } {
   const input = createMemorySchema.parse(rawInput);
   const gathering = getGathering(database, gatheringId);
-  getMembership(database, gathering.family_id, context.actorUserId);
+  requireGatheringVisibleForMemory(database, gathering, context.actorUserId);
   if (gathering.status !== "completed") {
     throw new HttpError(409, "GATHERING_NOT_COMPLETED", "Complete the gathering before adding a memory.");
   }
@@ -475,13 +516,15 @@ export function updateReconnectionPlanStatus(
   const input = updatePlanStatusSchema.parse(rawInput);
   const row = database
     .prepare("SELECT family_id, created_by_user_id, status FROM reconnection_plans WHERE id = ?")
-    .get(planId) as { family_id: string; created_by_user_id: string; status: string } | undefined;
+    .get(planId) as
+      | { family_id: string; created_by_user_id: string; status: ReconnectionPlanStatus }
+      | undefined;
   if (!row) throw new HttpError(404, "PLAN_NOT_FOUND", "Reconnection plan not found.");
   const membership = getMembership(database, row.family_id, context.actorUserId);
   if (row.created_by_user_id !== context.actorUserId && membership.role === "member") {
     throw new HttpError(403, "PLAN_OWNER_REQUIRED", "Only the plan creator or a family administrator can update it.");
   }
-  if (row.status === input.status) return { planId, status: input.status, alreadyCurrent: true };
+  assertReconnectionPlanStatusTransition(row.status, input.status);
   const timestamp = commandTime(context).toISOString();
   database.prepare("UPDATE reconnection_plans SET status = ?, updated_at = ? WHERE id = ?").run(input.status, timestamp, planId);
   writeAudit(database, {

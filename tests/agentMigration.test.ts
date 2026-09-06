@@ -219,4 +219,117 @@ describe("agent schema migration", () => {
       ).run(randomUUID(), sessionId, familyId, userId, actionType, now, now, "2026-08-14T12:00:00.000Z")).not.toThrow();
     }
   });
+
+  it("migration 7 preserves transcript insertion order and supports restorable gathering planners", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "family-agent-message-migration-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "migration.sqlite");
+    const initial = openDatabase({ path: databasePath });
+    openDatabases.push(initial);
+    const now = "2026-08-13T12:00:00.000Z";
+    const userId = randomUUID();
+    const familyId = randomUUID();
+    const sessionId = randomUUID();
+    initial.prepare("INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, ?, 'hash', 'Owner', ?, ?)")
+      .run(userId, "message-migration@example.test", now, now);
+    initial.prepare("INSERT INTO families (id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Family', ?, ?, ?)")
+      .run(familyId, userId, now, now);
+    initial.prepare("INSERT INTO agent_sessions (id, family_id, created_by_user_id, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)")
+      .run(sessionId, familyId, userId, now, now);
+
+    initial.exec(`
+      DROP TABLE agent_messages;
+      CREATE TABLE agent_messages (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+        kind TEXT NOT NULL CHECK(kind IN ('message', 'clarification', 'proposal', 'result')),
+        content_text TEXT NOT NULL CHECK(length(content_text) BETWEEN 1 AND 4000),
+        created_at TEXT NOT NULL
+      );
+    `);
+    // UUID sort order intentionally opposes insertion order; equal timestamps
+    // must still restore as user then assistant.
+    initial.prepare(
+      "INSERT INTO agent_messages (id, session_id, role, kind, content_text, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run("ffffffff-ffff-4fff-8fff-ffffffffffff", sessionId, "user", "message", "First", now);
+    initial.prepare(
+      "INSERT INTO agent_messages (id, session_id, role, kind, content_text, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run("00000000-0000-4000-8000-000000000000", sessionId, "assistant", "clarification", "Second", now);
+    initial.prepare("DELETE FROM schema_migrations WHERE version = 7").run();
+    initial.close();
+
+    const upgraded = openDatabase({ path: databasePath });
+    openDatabases.push(upgraded);
+    expect(upgraded.prepare("SELECT name FROM schema_migrations WHERE version = 7").get()).toEqual({
+      name: "agent_gathering_planner_messages",
+    });
+    expect(
+      upgraded
+        .prepare("SELECT role, content_text, message_order, payload_json FROM agent_messages ORDER BY message_order")
+        .all(),
+    ).toEqual([
+      { role: "user", content_text: "First", message_order: 1, payload_json: null },
+      { role: "assistant", content_text: "Second", message_order: 2, payload_json: null },
+    ]);
+    expect(() =>
+      upgraded
+        .prepare(
+          `INSERT INTO agent_messages
+           (id, session_id, role, kind, content_text, payload_json, message_order, created_at)
+           VALUES (?, ?, 'assistant', 'gathering_planner', 'Prepared', '{}', 3, ?)`,
+        )
+        .run(randomUUID(), sessionId, now),
+    ).not.toThrow();
+  });
+
+  it("migration 8 preserves v7 gatherings and installs scoped idempotency constraints", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "family-gathering-idempotency-migration-"));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, "migration.sqlite");
+    const initial = openDatabase({ path: databasePath });
+    openDatabases.push(initial);
+    const now = "2026-08-13T12:00:00.000Z";
+    const userId = randomUUID();
+    const familyId = randomUUID();
+    const gatheringId = randomUUID();
+    initial.prepare(
+      "INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, ?, 'hash', 'Owner', ?, ?)",
+    ).run(userId, "idempotency-migration@example.test", now, now);
+    initial.prepare(
+      "INSERT INTO families (id, name, created_by_user_id, created_at, updated_at) VALUES (?, 'Family', ?, ?, ?)",
+    ).run(familyId, userId, now, now);
+    initial.prepare(
+      `INSERT INTO gatherings
+       (id, family_id, title, purpose, start_at, timezone, location_name, gathering_type,
+        status, created_by_user_id, created_at, updated_at)
+       VALUES (?, ?, 'Existing gathering', 'Preserve this row', ?, 'Asia/Dubai', 'Golden Park',
+               'Outdoor activity', 'draft', ?, ?, ?)`,
+    ).run(gatheringId, familyId, "2026-09-12T13:00:00.000Z", userId, now, now);
+    initial.exec("DROP TABLE gathering_creation_requests;");
+    initial.prepare("DELETE FROM schema_migrations WHERE version = 8").run();
+    initial.close();
+
+    const upgraded = openDatabase({ path: databasePath });
+    openDatabases.push(upgraded);
+    expect(upgraded.prepare("SELECT title FROM gatherings WHERE id = ?").get(gatheringId)).toEqual({
+      title: "Existing gathering",
+    });
+    expect(upgraded.prepare("SELECT name FROM schema_migrations WHERE version = 8").get()).toEqual({
+      name: "gathering_creation_idempotency",
+    });
+
+    const insertRequest = upgraded.prepare(
+      `INSERT INTO gathering_creation_requests
+       (family_id, actor_user_id, idempotency_key, payload_hash, gathering_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    insertRequest.run(familyId, userId, "planner-existing-1", "hash-one", gatheringId, now);
+    expect(() => insertRequest.run(familyId, userId, "planner-existing-1", "hash-two", randomUUID(), now)).toThrow();
+    expect(() => insertRequest.run(familyId, userId, "planner-existing-2", "hash-one", gatheringId, now)).toThrow();
+    expect(() => insertRequest.run(randomUUID(), userId, "planner-missing-family", "hash", randomUUID(), now)).toThrow();
+
+    upgraded.prepare("DELETE FROM gatherings WHERE id = ?").run(gatheringId);
+    expect(upgraded.prepare("SELECT COUNT(*) AS count FROM gathering_creation_requests").get()).toEqual({ count: 0 });
+  });
 });

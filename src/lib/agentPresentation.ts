@@ -1,4 +1,11 @@
 import type { FamilyRole } from '../types';
+import {
+  isKnownAgentActionType,
+  type AgentActionType,
+} from './agentActionTypes';
+
+export { AGENT_ACTION_TYPES, isKnownAgentActionType } from './agentActionTypes';
+export type { AgentActionType } from './agentActionTypes';
 
 export type AgentResource = 'family' | 'gatherings' | 'plans' | 'memories' | 'rewards';
 export type AgentResultDestination = 'tree' | 'assistant' | 'calendar' | 'archive';
@@ -10,14 +17,14 @@ export interface AgentProposalPresentation {
   details?: Record<string, unknown>;
 }
 
-const DETAILED_CONFIRMATION_ACTION_TYPES = new Set([
+const DETAILED_CONFIRMATION_ACTION_TYPES: ReadonlySet<AgentActionType> = new Set([
   'DELETE_MEMBER',
   'DELETE_RELATIONSHIP',
   'DELETE_MEMORY',
   'COMPLETE_GATHERING',
   'PREPARE_INVITATION_LINKS',
 ]);
-const FAMILY_GRAPH_ACTION_TYPES = new Set([
+const FAMILY_GRAPH_ACTION_TYPES: ReadonlySet<AgentActionType> = new Set([
   'ADD_MEMBER',
   'UPDATE_MEMBER',
   'DELETE_MEMBER',
@@ -25,7 +32,7 @@ const FAMILY_GRAPH_ACTION_TYPES = new Set([
   'DELETE_RELATIONSHIP',
 ]);
 
-const ADMIN_ONLY_ACTION_TYPES = new Set([
+const ADMIN_ONLY_ACTION_TYPES: ReadonlySet<AgentActionType> = new Set([
   'ADD_MEMBER',
   'DELETE_MEMBER',
   'CREATE_RELATIONSHIP',
@@ -33,7 +40,7 @@ const ADMIN_ONLY_ACTION_TYPES = new Set([
   'COMPLETE_GATHERING',
 ]);
 
-const ACTION_RESOURCES: Record<string, AgentResource[]> = {
+const ACTION_RESOURCES: Record<AgentActionType, AgentResource[]> = {
   ADD_MEMBER: ['family'],
   UPDATE_MEMBER: ['family'],
   DELETE_MEMBER: ['family'],
@@ -48,7 +55,7 @@ const ACTION_RESOURCES: Record<string, AgentResource[]> = {
   DELETE_MEMORY: ['memories'],
 };
 
-const ACTION_DESTINATIONS: Record<string, AgentResultDestination> = {
+const ACTION_DESTINATIONS: Record<AgentActionType, AgentResultDestination> = {
   ADD_MEMBER: 'tree',
   UPDATE_MEMBER: 'tree',
   DELETE_MEMBER: 'tree',
@@ -104,23 +111,27 @@ export function invitationLinksUnavailableMessage(alreadyCompleted: boolean): st
 }
 
 export function isDestructiveAgentAction(actionType: string): boolean {
-  return DETAILED_CONFIRMATION_ACTION_TYPES.has(actionType);
+  // An action outside the protocol registry is never safe to treat as a
+  // routine one-click change. The Assistant rejects it before rendering, and
+  // this conservative fallback protects any other presentation caller.
+  return !isKnownAgentActionType(actionType) || DETAILED_CONFIRMATION_ACTION_TYPES.has(actionType);
 }
 
 export function isFamilyGraphAction(actionType: string): boolean {
-  return FAMILY_GRAPH_ACTION_TYPES.has(actionType);
+  return isKnownAgentActionType(actionType) && FAMILY_GRAPH_ACTION_TYPES.has(actionType);
 }
 
 export function canRoleConfirmAgentAction(actionType: string, role: FamilyRole): boolean {
+  if (!isKnownAgentActionType(actionType)) return false;
   return role === 'owner' || role === 'admin' || !ADMIN_ONLY_ACTION_TYPES.has(actionType);
 }
 
 export function getAgentActionResources(actionType: string): AgentResource[] {
-  return [...(ACTION_RESOURCES[actionType] ?? [])];
+  return isKnownAgentActionType(actionType) ? [...ACTION_RESOURCES[actionType]] : [];
 }
 
 export function getAgentResultDestination(actionType: string): AgentResultDestination | undefined {
-  return ACTION_DESTINATIONS[actionType];
+  return isKnownAgentActionType(actionType) ? ACTION_DESTINATIONS[actionType] : undefined;
 }
 
 export function getAgentResultDestinationLabel(actionType: string): string | undefined {
@@ -133,6 +144,7 @@ export function getAgentResultDestinationLabel(actionType: string): string | und
 }
 
 export function getAgentConfirmButtonLabel(actionType: string): string {
+  if (!isKnownAgentActionType(actionType)) return 'Review unsupported action';
   if (actionType === 'PREPARE_INVITATION_LINKS') return 'Review & prepare links';
   if (actionType === 'COMPLETE_GATHERING') return 'Review & complete';
   if (actionType === 'DELETE_MEMORY' || actionType.startsWith('DELETE_')) return 'Review & delete';

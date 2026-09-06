@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarPlus, Check, CheckCheck, LoaderCircle, RefreshCw, Sparkles, Users, X } from 'lucide-react';
 import type { ReconnectionPlan } from '../engagementTypes';
 import {
@@ -41,6 +41,20 @@ export function ReconnectionPlansPanel({
   const [actionError, setActionError] = useState('');
   const [updatingPlanId, setUpdatingPlanId] = useState('');
   const [showAll, setShowAll] = useState(false);
+  const activeFamilyIdRef = useRef(familyId);
+  const mountedRef = useRef(false);
+  const loadRequestVersionRef = useRef(0);
+  const statusRequestVersionRef = useRef(0);
+  activeFamilyIdRef.current = familyId;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      loadRequestVersionRef.current += 1;
+      statusRequestVersionRef.current += 1;
+    };
+  }, []);
 
   const memberNames = useMemo(
     () => new Map(members.map((member) => [member.id, member.name])),
@@ -48,6 +62,8 @@ export function ReconnectionPlansPanel({
   );
 
   const loadPlans = useCallback(async () => {
+    const requestedFamilyId = familyId;
+    const requestVersion = ++loadRequestVersionRef.current;
     if (!familyId) {
       setPlans([]);
       setLoading(false);
@@ -56,14 +72,41 @@ export function ReconnectionPlansPanel({
     setLoading(true);
     setLoadError('');
     try {
-      const result = await reconnectionPlansApi.list(familyId);
+      const result = await reconnectionPlansApi.list(requestedFamilyId);
+      if (
+        !mountedRef.current
+        || activeFamilyIdRef.current !== requestedFamilyId
+        || loadRequestVersionRef.current !== requestVersion
+      ) return;
       setPlans(result.plans);
     } catch (caught) {
+      if (
+        !mountedRef.current
+        || activeFamilyIdRef.current !== requestedFamilyId
+        || loadRequestVersionRef.current !== requestVersion
+      ) return;
       setPlans([]);
       setLoadError(requestErrorMessage(caught, 'Stored reconnection plans could not be loaded.'));
     } finally {
-      setLoading(false);
+      if (
+        mountedRef.current
+        && activeFamilyIdRef.current === requestedFamilyId
+        && loadRequestVersionRef.current === requestVersion
+      ) setLoading(false);
     }
+  }, [familyId]);
+
+  useEffect(() => {
+    // Invalidate every request started for the previous family before it can
+    // update this shared, long-lived Assistant panel.
+    loadRequestVersionRef.current += 1;
+    statusRequestVersionRef.current += 1;
+    setPlans([]);
+    setLoading(Boolean(familyId));
+    setLoadError('');
+    setActionError('');
+    setUpdatingPlanId('');
+    setShowAll(false);
   }, [familyId]);
 
   useEffect(() => {
@@ -71,17 +114,33 @@ export function ReconnectionPlansPanel({
   }, [loadPlans, refreshVersion]);
 
   const updateStatus = async (planId: string, status: ReconnectionPlanUpdateStatus) => {
+    const requestedFamilyId = familyId;
+    const requestVersion = ++statusRequestVersionRef.current;
     setUpdatingPlanId(planId);
     setActionError('');
     try {
       const result = await reconnectionPlansApi.updateStatus(planId, status);
+      if (
+        !mountedRef.current
+        || activeFamilyIdRef.current !== requestedFamilyId
+        || statusRequestVersionRef.current !== requestVersion
+      ) return;
       setPlans((current) => current.map((plan) => (
         plan.id === result.id ? { ...plan, status: result.status, updatedAt: new Date().toISOString() } : plan
       )));
     } catch (caught) {
+      if (
+        !mountedRef.current
+        || activeFamilyIdRef.current !== requestedFamilyId
+        || statusRequestVersionRef.current !== requestVersion
+      ) return;
       setActionError(requestErrorMessage(caught, 'The plan status could not be changed.'));
     } finally {
-      setUpdatingPlanId('');
+      if (
+        mountedRef.current
+        && activeFamilyIdRef.current === requestedFamilyId
+        && statusRequestVersionRef.current === requestVersion
+      ) setUpdatingPlanId('');
     }
   };
 

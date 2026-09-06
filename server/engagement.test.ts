@@ -138,6 +138,284 @@ describe("engagement routes", () => {
     expect((database.prepare("SELECT COUNT(*) AS count FROM gatherings").get() as { count: number }).count).toBe(0);
   });
 
+  it("creates one gathering and returns it on an identical idempotent retry", async () => {
+    const agent = await authenticatedAgent();
+    const idempotencyKey = "planner-40000000-0000-4000-8000-000000000001";
+    const startAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString();
+    const payload = {
+      title: "  Golden Park family outing  ",
+      purpose: "Spend time together",
+      startAt,
+      locationName: "Golden Park",
+      type: "Outdoor activity",
+    };
+
+    const created = await agent
+      .post(`/api/families/${familyId}/gatherings`)
+      .set("Idempotency-Key", idempotencyKey)
+      .send(payload)
+      .expect(201);
+    expect(created.body.alreadyCreated).toBe(false);
+
+    // Schema defaults and trimming are applied before hashing, so this is the
+    // same canonical payload even though the raw JSON differs.
+    const replayed = await agent
+      .post(`/api/families/${familyId}/gatherings`)
+      .set("Idempotency-Key", idempotencyKey)
+      .send({
+        type: "Outdoor activity",
+        locationName: "Golden Park",
+        timezone: "Asia/Dubai",
+        startAt,
+        purpose: "Spend time together",
+        title: "Golden Park family outing",
+      })
+      .expect(200);
+
+    expect(replayed.body.alreadyCreated).toBe(true);
+    expect(replayed.body.gathering.id).toBe(created.body.gathering.id);
+    expect((database.prepare("SELECT COUNT(*) AS count FROM gatherings").get() as { count: number }).count).toBe(1);
+    expect(
+      (database
+        .prepare("SELECT COUNT(*) AS count FROM audit_events WHERE action = 'gathering.created'")
+        .get() as { count: number }).count,
+    ).toBe(1);
+    expect(
+      (database.prepare("SELECT COUNT(*) AS count FROM gathering_creation_requests").get() as { count: number }).count,
+    ).toBe(1);
+  });
+
+  it("creates exactly one gathering for simultaneous identical requests on separate HTTP sessions", async () => {
+    const firstAgent = await authenticatedAgent();
+    const secondAgent = await authenticatedAgent();
+    const idempotencyKey = "planner-40000000-0000-4000-8000-000000000003";
+    const payload = {
+      title: "Golden Park family outing",
+      purpose: "Spend time together",
+      startAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString(),
+      timezone: "Asia/Dubai",
+      locationName: "Golden Park",
+      type: "Outdoor activity",
+    };
+
+    const [first, second] = await Promise.all([
+      firstAgent
+        .post(`/api/families/${familyId}/gatherings`)
+        .set("Idempotency-Key", idempotencyKey)
+        .send(payload),
+      secondAgent
+        .post(`/api/families/${familyId}/gatherings`)
+        .set("Idempotency-Key", idempotencyKey)
+        .send(payload),
+    ]);
+
+    expect([first.status, second.status].sort()).toEqual([200, 201]);
+    expect([first.body.alreadyCreated, second.body.alreadyCreated].sort()).toEqual([false, true]);
+    expect(second.body.gathering.id).toBe(first.body.gathering.id);
+    expect((database.prepare("SELECT COUNT(*) AS count FROM gatherings").get() as { count: number }).count).toBe(1);
+    expect(
+      (database
+        .prepare("SELECT COUNT(*) AS count FROM audit_events WHERE action = 'gathering.created'")
+        .get() as { count: number }).count,
+    ).toBe(1);
+    expect(
+      (database.prepare("SELECT COUNT(*) AS count FROM gathering_creation_requests").get() as { count: number }).count,
+    ).toBe(1);
+  });
+
+  it("isolates the same idempotency key across users and families", async () => {
+    const owner = await authenticatedAgent();
+    const member = await authenticatedAgent(memberUserId);
+    const secondFamilyId = "40000000-0000-4000-8000-000000000002";
+    const secondOwnerMemberId = "50000000-0000-4000-8000-000000000003";
+    const now = new Date().toISOString();
+    database
+      .prepare("INSERT INTO families (id, name, created_by_user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run(secondFamilyId, "Second Family", ownerId, now, now);
+    database
+      .prepare(
+        `INSERT INTO family_members
+         (id, family_id, user_id, display_name, birth_date, interests_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, '[]', ?, ?)`,
+      )
+      .run(secondOwnerMemberId, secondFamilyId, ownerId, "Owner", "1985-01-01", now, now);
+    database
+      .prepare("INSERT INTO family_users (family_id, user_id, role, linked_member_id, created_at) VALUES (?, ?, 'owner', ?, ?)")
+      .run(secondFamilyId, ownerId, secondOwnerMemberId, now);
+
+    const idempotencyKey = "planner-shared-across-principals";
+    const payload = {
+      title: "Shared-key gathering",
+      purpose: "Prove namespace isolation",
+      startAt: new Date(Date.now() + 8 * 24 * 60 * 60 * 1_000).toISOString(),
+      timezone: "Asia/Dubai",
+      locationName: "Golden Park",
+      type: "Outdoor activity",
+    };
+
+    const ownerFirstFamily = await owner
+      .post(`/api/families/${familyId}/gatherings`)
+      .set("Idempotency-Key", idempotencyKey)
+      .send(payload)
+      .expect(201);
+    const memberFirstFamily = await member
+      .post(`/api/families/${familyId}/gatherings`)
+      .set("Idempotency-Key", idempotencyKey)
+      .send(payload)
+      .expect(201);
+    const ownerSecondFamily = await owner
+      .post(`/api/families/${secondFamilyId}/gatherings`)
+      .set("Idempotency-Key", idempotencyKey)
+      .send(payload)
+      .expect(201);
+
+    expect(
+      new Set([
+        ownerFirstFamily.body.gathering.id,
+        memberFirstFamily.body.gathering.id,
+        ownerSecondFamily.body.gathering.id,
+      ]).size,
+    ).toBe(3);
+    expect((database.prepare("SELECT COUNT(*) AS count FROM gatherings").get() as { count: number }).count).toBe(3);
+    expect(
+      (database.prepare("SELECT COUNT(*) AS count FROM gathering_creation_requests").get() as { count: number }).count,
+    ).toBe(3);
+  });
+
+  it("rechecks current family membership before returning an idempotent replay", async () => {
+    const agent = await authenticatedAgent(memberUserId);
+    const idempotencyKey = "planner-revoked-membership-replay";
+    const payload = {
+      title: "Member-created outing",
+      purpose: "Test replay authorization",
+      startAt: new Date(Date.now() + 9 * 24 * 60 * 60 * 1_000).toISOString(),
+      timezone: "Asia/Dubai",
+      locationName: "Golden Park",
+      type: "Outdoor activity",
+    };
+
+    const created = await agent
+      .post(`/api/families/${familyId}/gatherings`)
+      .set("Idempotency-Key", idempotencyKey)
+      .send(payload)
+      .expect(201);
+
+    database.prepare("DELETE FROM family_users WHERE family_id = ? AND user_id = ?").run(familyId, memberUserId);
+
+    const replay = await agent
+      .post(`/api/families/${familyId}/gatherings`)
+      .set("Idempotency-Key", idempotencyKey)
+      .send(payload)
+      .expect(404);
+
+    expect(replay.body.error.code).toBe("FAMILY_NOT_FOUND");
+    expect(replay.body).not.toHaveProperty("gathering");
+    expect(created.body.gathering.id).toBeTruthy();
+    expect((database.prepare("SELECT COUNT(*) AS count FROM gatherings").get() as { count: number }).count).toBe(1);
+    expect(
+      (database.prepare("SELECT COUNT(*) AS count FROM gathering_creation_requests").get() as { count: number }).count,
+    ).toBe(1);
+  });
+
+  it("rejects reuse of an idempotency key with different gathering details", async () => {
+    const agent = await authenticatedAgent();
+    const idempotencyKey = "planner-40000000-0000-4000-8000-000000000002";
+    const payload = {
+      title: "Golden Park family outing",
+      purpose: "Spend time together",
+      startAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString(),
+      timezone: "Asia/Dubai",
+      locationName: "Golden Park",
+      type: "Outdoor activity",
+    };
+
+    const created = await agent
+      .post(`/api/families/${familyId}/gatherings`)
+      .set("Idempotency-Key", idempotencyKey)
+      .send(payload)
+      .expect(201);
+    const rejected = await agent
+      .post(`/api/families/${familyId}/gatherings`)
+      .set("Idempotency-Key", idempotencyKey)
+      .send({ ...payload, locationName: "A different park" })
+      .expect(409);
+
+    expect(rejected.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect((database.prepare("SELECT COUNT(*) AS count FROM gatherings").get() as { count: number }).count).toBe(1);
+    expect(
+      (database
+        .prepare("SELECT COUNT(*) AS count FROM audit_events WHERE action = 'gathering.created'")
+        .get() as { count: number }).count,
+    ).toBe(1);
+    expect(created.body.gathering.id).toBeTruthy();
+  });
+
+  it("creates no duplicate when simultaneous same-key requests have different payloads", async () => {
+    const firstAgent = await authenticatedAgent();
+    const secondAgent = await authenticatedAgent();
+    const idempotencyKey = "planner-40000000-0000-4000-8000-000000000004";
+    const payload = {
+      title: "Golden Park family outing",
+      purpose: "Spend time together",
+      startAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString(),
+      timezone: "Asia/Dubai",
+      locationName: "Golden Park",
+      type: "Outdoor activity",
+    };
+
+    const [first, second] = await Promise.all([
+      firstAgent
+        .post(`/api/families/${familyId}/gatherings`)
+        .set("Idempotency-Key", idempotencyKey)
+        .send(payload),
+      secondAgent
+        .post(`/api/families/${familyId}/gatherings`)
+        .set("Idempotency-Key", idempotencyKey)
+        .send({ ...payload, locationName: "Creek Park" }),
+    ]);
+
+    expect([first.status, second.status].sort()).toEqual([201, 409]);
+    const conflict = first.status === 409 ? first : second;
+    const created = first.status === 201 ? first : second;
+    expect(conflict.body.error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    expect(["Golden Park", "Creek Park"]).toContain(created.body.gathering.locationName);
+    expect((database.prepare("SELECT COUNT(*) AS count FROM gatherings").get() as { count: number }).count).toBe(1);
+    expect(
+      (database
+        .prepare("SELECT COUNT(*) AS count FROM audit_events WHERE action = 'gathering.created'")
+        .get() as { count: number }).count,
+    ).toBe(1);
+    expect(
+      (database.prepare("SELECT COUNT(*) AS count FROM gathering_creation_requests").get() as { count: number }).count,
+    ).toBe(1);
+  });
+
+  it("validates idempotency keys and leaves legacy no-header responses unchanged", async () => {
+    const agent = await authenticatedAgent();
+    const payload = {
+      title: "Friday family visit",
+      purpose: "Reconnect across generations",
+      startAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString(),
+      timezone: "Asia/Dubai",
+      locationName: "Family home, Abu Dhabi",
+      type: "Friday visit",
+    };
+
+    const invalid = await agent
+      .post(`/api/families/${familyId}/gatherings`)
+      .set("Idempotency-Key", "bad key!")
+      .send(payload)
+      .expect(400);
+    expect(invalid.body.error.code).toBe("INVALID_IDEMPOTENCY_KEY");
+    expect((database.prepare("SELECT COUNT(*) AS count FROM gatherings").get() as { count: number }).count).toBe(0);
+
+    const legacy = await agent
+      .post(`/api/families/${familyId}/gatherings`)
+      .send(payload)
+      .expect(201);
+    expect(legacy.body).not.toHaveProperty("alreadyCreated");
+  });
+
   it("shows ordinary members only their own RSVP record", async () => {
     const owner = await authenticatedAgent();
     const member = await authenticatedAgent(memberUserId);

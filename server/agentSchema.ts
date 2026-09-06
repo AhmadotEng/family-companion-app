@@ -183,3 +183,32 @@ export const AGENT_ENGAGEMENT_ACTION_PARITY_MIGRATION_SQL = `
   CREATE INDEX agent_action_proposals_session_idx
     ON agent_action_proposals(session_id, created_at);
 `;
+
+/**
+ * Migration 7 adds the non-mutating gathering-planner transcript kind and a
+ * JSON payload for restoring its editable form. `message_order` preserves the
+ * true insertion order even when several messages share the same timestamp.
+ */
+export const AGENT_GATHERING_PLANNER_MESSAGE_MIGRATION_SQL = `
+  ALTER TABLE agent_messages RENAME TO agent_messages_migration_7_source;
+  CREATE TABLE agent_messages (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    kind TEXT NOT NULL CHECK(kind IN ('message', 'clarification', 'proposal', 'result', 'gathering_planner')),
+    content_text TEXT NOT NULL CHECK(length(content_text) BETWEEN 1 AND 4000),
+    payload_json TEXT CHECK(payload_json IS NULL OR json_valid(payload_json)),
+    message_order INTEGER NOT NULL CHECK(message_order >= 1),
+    created_at TEXT NOT NULL,
+    UNIQUE(session_id, message_order)
+  );
+  INSERT INTO agent_messages
+    (id, session_id, role, kind, content_text, payload_json, message_order, created_at)
+  SELECT id, session_id, role, kind, content_text, NULL,
+         ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at, rowid),
+         created_at
+  FROM agent_messages_migration_7_source;
+  DROP TABLE agent_messages_migration_7_source;
+  CREATE INDEX agent_messages_session_created_idx
+    ON agent_messages(session_id, message_order);
+`;

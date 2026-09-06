@@ -23,7 +23,11 @@ describe('engagement API client mapping', () => {
       locationName: 'Family home, Dubai',
       type: 'Meal',
     };
-    const result = await engagementApi.createGathering('family id/with spaces', input);
+    const result = await engagementApi.createGathering(
+      'family id/with spaces',
+      input,
+      { idempotencyKey: 'planner-message-id' },
+    );
 
     expect(result.gathering).toEqual(gathering);
     expect(fetchMock).toHaveBeenCalledOnce();
@@ -32,6 +36,27 @@ describe('engagement API client mapping', () => {
     expect(request.method).toBe('POST');
     expect(request.credentials).toBe('same-origin');
     expect(JSON.parse(String(request.body))).toEqual(input);
+    expect((request.headers as Headers).get('Idempotency-Key')).toBe('planner-message-id');
+  });
+
+  it('keeps legacy gathering creates compatible when no idempotency key is supplied', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ gathering: { id: 'legacy-gathering', invitations: [] } }),
+      { status: 201, headers: { 'content-type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await engagementApi.createGathering('family-1', {
+      title: 'Friday dinner',
+      purpose: 'Reconnect',
+      startAt: '2026-12-02T18:30:00+04:00',
+      timezone: 'Asia/Dubai',
+      locationName: 'Family home, Dubai',
+      type: 'Meal',
+    });
+
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    expect((request.headers as Headers).has('Idempotency-Key')).toBe(false);
   });
 
   it('uses the unauthenticated invitation token endpoints for read and response', async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { adaptFamilyContext } from './familyAdapter';
-import { ApiFamilyMember, FamilyContext } from '../types';
+import { ApiFamilyMember, FamilyContext, FamilyRelationship, RelationshipType } from '../types';
+import { computeTreeLayout, generateConnections } from '../lib/treeLayout';
 
 const member = (id: string, displayName: string): ApiFamilyMember => ({
   id,
@@ -9,6 +10,20 @@ const member = (id: string, displayName: string): ApiFamilyMember => ({
   interests: [],
   createdAt: '2026-08-13T00:00:00.000Z',
   updatedAt: '2026-08-13T00:00:00.000Z'
+});
+
+const relationship = (
+  id: string,
+  sourceMemberId: string,
+  targetMemberId: string,
+  type: RelationshipType
+): FamilyRelationship => ({
+  id,
+  familyId: 'family-1',
+  sourceMemberId,
+  targetMemberId,
+  type,
+  createdAt: '2026-08-13T00:00:00.000Z'
 });
 
 describe('adaptFamilyContext', () => {
@@ -112,6 +127,163 @@ describe('adaptFamilyContext', () => {
     expect(byId.get('sibling-two')?.siblingIds).toEqual(['me', 'sibling-one']);
     expect(byId.get('sibling-one')?.relationship).toBe('Sibling');
     expect(byId.get('sibling-two')?.relationship).toBe('Sibling');
-    expect(byId.get('me')?.siblingGroupId).toBe(byId.get('sibling-two')?.siblingGroupId);
+    expect(byId.get('me')?.siblingGroupId).toBeUndefined();
+    expect(byId.get('sibling-one')?.siblingGroupId).toBe(byId.get('sibling-two')?.siblingGroupId);
+  });
+
+  it('completes the parent and spouse links across an explicit full-sibling group', () => {
+    const relationships = [
+      relationship('dad-ahmad', 'dad', 'ahmad', 'parent'),
+      relationship('anas-ahmad', 'anas', 'ahmad', 'sibling'),
+      relationship('mom-anas', 'mom', 'anas', 'parent')
+    ];
+    const context: FamilyContext = {
+      family: { id: 'family-1', name: 'Mustafa Family', role: 'owner' },
+      currentUser: { id: 'user-1', email: 'ahmad@example.com', displayName: 'Ahmad', linkedMemberId: 'ahmad' },
+      members: [
+        member('dad', 'Dad'),
+        member('mom', 'Mom'),
+        member('ahmad', 'Ahmad Mustafa'),
+        member('anas', 'Anas Mustafa')
+      ],
+      relationships,
+      safeLocations: []
+    };
+
+    const project = (inputRelationships: FamilyRelationship[]) => {
+      const byId = new Map(adaptFamilyContext({ ...context, relationships: inputRelationships }).map(item => [item.id, item]));
+      return {
+        dad: byId.get('dad'),
+        mom: byId.get('mom'),
+        ahmad: byId.get('ahmad'),
+        anas: byId.get('anas')
+      };
+    };
+    const result = project(relationships);
+
+    expect(result.dad).toMatchObject({ childrenIds: ['ahmad', 'anas'], spouseIds: ['mom'] });
+    expect(result.mom).toMatchObject({ childrenIds: ['ahmad', 'anas'], spouseIds: ['dad'] });
+    expect(result.ahmad).toMatchObject({ parentIds: ['dad', 'mom'], siblingIds: ['anas'] });
+    expect(result.anas).toMatchObject({ parentIds: ['dad', 'mom'], siblingIds: ['ahmad'] });
+    expect(result.anas?.relationship).toBe('Sibling');
+
+    // Database row order must not change the completed tree.
+    expect(project([...relationships].reverse())).toEqual(result);
+
+    const completedMembers = adaptFamilyContext(context);
+    const connectionIds = generateConnections(
+      computeTreeLayout(completedMembers, 'ahmad'),
+      220,
+      180
+    ).map(line => line.id);
+    expect(connectionIds).toEqual(expect.arrayContaining([
+      'spouse-dad-mom',
+      'child-dad-mom-ahmad',
+      'child-dad-mom-anas'
+    ]));
+  });
+
+  it('propagates known parents through a transitive explicit sibling component', () => {
+    const context: FamilyContext = {
+      family: { id: 'family-1', name: 'Example Family', role: 'owner' },
+      currentUser: { id: 'user-1', email: 'a@example.com', displayName: 'A', linkedMemberId: 'a' },
+      members: [member('parent', 'Parent'), member('a', 'A'), member('b', 'B'), member('c', 'C')],
+      relationships: [
+        relationship('parent-a', 'parent', 'a', 'parent'),
+        relationship('a-b', 'a', 'b', 'sibling'),
+        relationship('b-c', 'b', 'c', 'sibling')
+      ],
+      safeLocations: []
+    };
+
+    const byId = new Map(adaptFamilyContext(context).map(item => [item.id, item]));
+    expect(byId.get('parent')?.childrenIds).toEqual(['a', 'b', 'c']);
+    expect(byId.get('a')?.parentIds).toEqual(['parent']);
+    expect(byId.get('b')?.parentIds).toEqual(['parent']);
+    expect(byId.get('c')?.parentIds).toEqual(['parent']);
+    expect(byId.get('a')?.siblingIds).toEqual(['b', 'c']);
+    expect(byId.get('c')?.siblingIds).toEqual(['a', 'b']);
+  });
+
+  it('keeps half-sibling parent sets separate while projecting their shared parent', () => {
+    const context: FamilyContext = {
+      family: { id: 'family-1', name: 'Blended Family', role: 'owner' },
+      currentUser: { id: 'user-1', email: 'a@example.com', displayName: 'A', linkedMemberId: 'a' },
+      members: [
+        member('dad', 'Dad'),
+        member('mom-a', 'A Mother'),
+        member('mom-b', 'B Mother'),
+        member('a', 'A'),
+        member('b', 'B')
+      ],
+      relationships: [
+        relationship('dad-a', 'dad', 'a', 'parent'),
+        relationship('dad-b', 'dad', 'b', 'parent'),
+        relationship('mom-a-a', 'mom-a', 'a', 'parent'),
+        relationship('mom-b-b', 'mom-b', 'b', 'parent')
+      ],
+      safeLocations: []
+    };
+
+    const byId = new Map(adaptFamilyContext(context).map(item => [item.id, item]));
+    expect(byId.get('a')).toMatchObject({ parentIds: ['dad', 'mom-a'], siblingIds: ['b'] });
+    expect(byId.get('b')).toMatchObject({ parentIds: ['dad', 'mom-b'], siblingIds: ['a'] });
+    expect(byId.get('mom-a')?.childrenIds).toEqual(['a']);
+    expect(byId.get('mom-b')?.childrenIds).toEqual(['b']);
+    expect(byId.get('dad')?.spouseIds).toEqual(['mom-a', 'mom-b']);
+    expect(byId.get('a')?.siblingGroupId).toBeUndefined();
+    expect(byId.get('b')?.siblingGroupId).toBeUndefined();
+  });
+
+  it('does not turn a spouse, guardian, or generic relative into an inferred parent', () => {
+    const context: FamilyContext = {
+      family: { id: 'family-1', name: 'Example Family', role: 'owner' },
+      currentUser: { id: 'user-1', email: 'me@example.com', displayName: 'Me', linkedMemberId: 'me' },
+      members: [
+        member('me', 'Me'),
+        member('sibling', 'Sibling'),
+        member('spouse', 'Spouse'),
+        member('guardian', 'Guardian'),
+        member('relative', 'Relative')
+      ],
+      relationships: [
+        relationship('me-sibling', 'me', 'sibling', 'sibling'),
+        relationship('me-spouse', 'me', 'spouse', 'spouse'),
+        relationship('guardian-me', 'guardian', 'me', 'guardian'),
+        relationship('relative-me', 'relative', 'me', 'relative')
+      ],
+      safeLocations: []
+    };
+
+    const adapted = adaptFamilyContext(context);
+    const byId = new Map(adapted.map(item => [item.id, item]));
+    expect(byId.get('guardian')?.childrenIds).toEqual(['me']);
+    expect(byId.get('sibling')?.parentIds).toEqual([]);
+    expect(byId.get('spouse')?.childrenIds).toEqual([]);
+    expect(byId.get('relative')?.childrenIds).toEqual([]);
+    expect(byId.get('me')?.spouseIds).toEqual(['spouse']);
+    expect(byId.get('me')?.relativeIds).toEqual(['relative']);
+    expect(byId.get('relative')?.relativeIds).toEqual(['me']);
+
+    const connectionIds = generateConnections(computeTreeLayout(adapted, 'me'), 220, 180).map(line => line.id);
+    expect(connectionIds).toContain('relative-me-relative');
+  });
+
+  it('projects contradictory legacy relationship rows deterministically', () => {
+    const relationships = [
+      relationship('parent', 'other', 'me', 'parent'),
+      relationship('spouse', 'other', 'me', 'spouse'),
+      relationship('sibling', 'other', 'me', 'sibling')
+    ];
+    const context: FamilyContext = {
+      family: { id: 'family-1', name: 'Legacy Family', role: 'owner' },
+      currentUser: { id: 'user-1', email: 'me@example.com', displayName: 'Me', linkedMemberId: 'me' },
+      members: [member('me', 'Me'), member('other', 'Other')],
+      relationships,
+      safeLocations: []
+    };
+
+    expect(adaptFamilyContext({ ...context, relationships: [...relationships].reverse() }))
+      .toEqual(adaptFamilyContext(context));
   });
 });

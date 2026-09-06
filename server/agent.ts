@@ -17,6 +17,7 @@ import {
 import { GEMINI_AGENT_SYSTEM_INSTRUCTION } from "./agentPrompt.js";
 import { insertReconnectionPlan } from "./engagement.js";
 import {
+  assertReconnectionPlanStatusTransition,
   cleanupDeletedMemoryFile,
   completeGathering,
   completeGatheringSchema,
@@ -32,6 +33,13 @@ import {
 import { asyncRoute, HttpError, parseBody, parseParams } from "./http.js";
 import { isoDateSchema, memberProfileSchema } from "./schemas.js";
 import { requireAuth } from "./security.js";
+import {
+  buildEffectiveFamilyRelationships,
+  isPlannerClarificationMessage,
+  resolveGatheringInvitees,
+  type EffectiveMemberRelationships,
+} from "./familyRelationshipResolver.js";
+import { AGENT_ACTION_TYPES, type AgentActionType } from "../src/lib/agentActionTypes.js";
 
 const text = (minimum: number, maximum: number) => z.string().trim().min(minimum).max(maximum);
 const optionalText = (maximum: number) =>
@@ -41,6 +49,7 @@ const optionalText = (maximum: number) =>
   );
 
 const relationshipTypeSchema = z.enum(["parent", "spouse", "sibling", "guardian", "relative"]);
+const agentActionTypeSchema = z.enum(AGENT_ACTION_TYPES);
 const addMemberRelationshipSchema = z
   .object({
     existingMemberId: z.string().uuid(),
@@ -198,6 +207,69 @@ export const reconnectionPlanPayloadSchema = z
 export type ReconnectionPlanPayload = z.infer<typeof reconnectionPlanPayloadSchema>;
 
 export const createGatheringDraftPayloadSchema = createGatheringSchema;
+
+export const GATHERING_PLANNER_TYPES = [
+  "Family gathering",
+  "Majlis",
+  "Meal",
+  "Outdoor activity",
+  "Celebration",
+  "Visit",
+  "Phone call",
+  "Video call",
+] as const;
+
+export type GatheringPlannerType = (typeof GATHERING_PLANNER_TYPES)[number];
+
+function normalizeGatheringPlannerType(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const normalized = value.trim().toLocaleLowerCase("en").replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  const aliases: Record<string, GatheringPlannerType> = {
+    "family gathering": "Family gathering",
+    family: "Family gathering",
+    gathering: "Family gathering",
+    majlis: "Majlis",
+    meal: "Meal",
+    "family meal": "Meal",
+    breakfast: "Meal",
+    lunch: "Meal",
+    dinner: "Meal",
+    "outdoor activity": "Outdoor activity",
+    outdoor: "Outdoor activity",
+    outing: "Outdoor activity",
+    picnic: "Outdoor activity",
+    celebration: "Celebration",
+    party: "Celebration",
+    visit: "Visit",
+    "home visit": "Visit",
+    "phone call": "Phone call",
+    phone: "Phone call",
+    call: "Phone call",
+    "video call": "Video call",
+    video: "Video call",
+  };
+  return aliases[normalized] ?? value;
+}
+
+export const gatheringPlannerPayloadSchema = z
+  .object({
+    title: text(2, 120),
+    purpose: text(2, 500),
+    startAt: z.string().datetime({ offset: true }),
+    timezone: z.literal("Asia/Dubai"),
+    locationName: text(2, 300),
+    type: z.preprocess(normalizeGatheringPlannerType, z.enum(GATHERING_PLANNER_TYPES)),
+    notes: optionalText(2_000),
+    memberIds: z
+      .array(z.string().uuid())
+      .max(200)
+      .transform((ids) => [...new Set(ids)])
+      .default([]),
+    invitationChannel: z.enum(["share_link", "whatsapp"]).default("share_link"),
+  })
+  .strict();
+
+export type GatheringPlannerPayload = z.infer<typeof gatheringPlannerPayloadSchema>;
 export const prepareInvitationLinksPayloadSchema = prepareInvitationsSchema
   .extend({ gatheringId: z.string().uuid() })
   .strict();
@@ -317,12 +389,33 @@ const providerDecisionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("clarification"), message: text(1, 2_000) }).strict(),
   z
     .object({
+      kind: z.literal("gathering_planner"),
+      message: text(1, 2_000),
+      planner: gatheringPlannerPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal("proposal"),
       message: text(1, 2_000),
       action: agentActionSchema,
     })
     .strict(),
 ]);
+
+/**
+ * Proposal transcript payloads contain only the public preview that was
+ * already returned to the user plus the proposal id. The mutable status,
+ * action type, title, summary, and warnings are always reloaded from the
+ * owned proposal row, and one-time results such as invitation URLs are never
+ * written to the transcript.
+ */
+const storedProposalMessagePayloadSchema = z
+  .object({
+    proposalId: z.string().uuid(),
+    details: z.record(z.string().trim().min(1).max(100), z.unknown()),
+  })
+  .strict();
 
 export type AgentProviderDecision = z.infer<typeof providerDecisionSchema>;
 
@@ -450,6 +543,7 @@ export interface AgentFamilyContext {
     targetMemberId: string;
     type: z.infer<typeof relationshipTypeSchema>;
   }>;
+  effectiveRelationships: EffectiveMemberRelationships[];
   engagement: {
     evidenceSignals: AgentEvidenceSignal[];
     sampleActivities: AgentSampleActivityContext[];
@@ -497,8 +591,24 @@ export const GEMINI_RESPONSE_JSON_SCHEMA = {
   additionalProperties: false,
   required: ["kind", "message"],
   properties: {
-    kind: { type: "string", enum: ["message", "clarification", "proposal"] },
+    kind: { type: "string", enum: ["message", "clarification", "gathering_planner", "proposal"] },
     message: { type: "string" },
+    planner: {
+      type: "object",
+      additionalProperties: false,
+      required: ["title", "purpose", "startAt", "timezone", "locationName", "type", "memberIds", "invitationChannel"],
+      properties: {
+        title: { type: "string" },
+        purpose: { type: "string" },
+        startAt: { type: "string" },
+        timezone: { type: "string", enum: ["Asia/Dubai"] },
+        locationName: { type: "string" },
+        type: { type: "string", enum: GATHERING_PLANNER_TYPES },
+        notes: { type: "string" },
+        memberIds: { type: "array", items: { type: "string" } },
+        invitationChannel: { type: "string", enum: ["share_link", "whatsapp"] },
+      },
+    },
     action: {
       type: "object",
       additionalProperties: false,
@@ -506,20 +616,7 @@ export const GEMINI_RESPONSE_JSON_SCHEMA = {
       properties: {
         type: {
           type: "string",
-          enum: [
-            "ADD_MEMBER",
-            "UPDATE_MEMBER",
-            "DELETE_MEMBER",
-            "CREATE_RELATIONSHIP",
-            "DELETE_RELATIONSHIP",
-            "CREATE_RECONNECTION_PLAN",
-            "CREATE_GATHERING_DRAFT",
-            "PREPARE_INVITATION_LINKS",
-            "COMPLETE_GATHERING",
-            "CREATE_NOTE_MEMORY",
-            "DELETE_MEMORY",
-            "UPDATE_PLAN_STATUS",
-          ],
+          enum: AGENT_ACTION_TYPES,
         },
         payload: { type: "object", additionalProperties: true },
       },
@@ -593,19 +690,7 @@ interface ActionProposalRow {
   session_id: string;
   family_id: string;
   created_by_user_id: string;
-  action_type:
-    | "ADD_MEMBER"
-    | "UPDATE_MEMBER"
-    | "DELETE_MEMBER"
-    | "CREATE_RELATIONSHIP"
-    | "DELETE_RELATIONSHIP"
-    | "CREATE_RECONNECTION_PLAN"
-    | "CREATE_GATHERING_DRAFT"
-    | "PREPARE_INVITATION_LINKS"
-    | "COMPLETE_GATHERING"
-    | "CREATE_NOTE_MEMORY"
-    | "DELETE_MEMORY"
-    | "UPDATE_PLAN_STATUS";
+  action_type: AgentActionType;
   payload_json: string;
   title: string;
   summary: string;
@@ -628,14 +713,104 @@ const messageRequestSchema = z
   })
   .strict();
 
+// `expectedActionType` binds the presentation the user approved to the
+// authoritative stored proposal. It remains optional for legacy direct API
+// callers, while the current Assistant always supplies and verifies it.
+const proposalResolutionRequestSchema = z
+  .object({ expectedActionType: agentActionTypeSchema.optional() })
+  .strict();
+
 const proposalParamsSchema = z.object({ proposalId: z.string().uuid() });
 const sessionParamsSchema = z.object({ sessionId: z.string().uuid() });
+const sessionMessagesQuerySchema = z.object({ familyId: z.string().uuid() }).strict();
 
-const DEFAULT_PROVIDER_TIMEOUT_MS = 20_000;
+const DEFAULT_PROVIDER_TIMEOUT_MS = 60_000;
 const MIN_PROVIDER_TIMEOUT_MS = 100;
 const MAX_PROVIDER_TIMEOUT_MS = 120_000;
 export const AGENT_TRANSCRIPT_RETENTION_DAYS = 30;
 const AGENT_TRANSCRIPT_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1_000;
+
+/**
+ * Hard, fail-closed bounds for data serialized into one provider request.
+ * Nothing is silently truncated: if an authorized context exceeds a bound,
+ * the request stops before disclosure so relationship/name resolution cannot
+ * operate on an incomplete family graph.
+ */
+export const AGENT_PROVIDER_CONTEXT_LIMITS = Object.freeze({
+  members: 256,
+  relationships: 1_024,
+  effectiveRelationshipReferences: 65_536,
+  gatherings: 256,
+  invitationStatuses: 4_096,
+  memories: 256,
+  plans: 256,
+  serializedBytes: 4 * 1_024 * 1_024,
+});
+
+function contextLimitError(category: string): HttpError {
+  return new HttpError(
+    413,
+    "AGENT_CONTEXT_TOO_LARGE",
+    `The authorized family ${category} is too large for the AI Helper to process safely. No data was sent to the AI provider and no conversation or family data was changed.`,
+  );
+}
+
+function assertContextCount(category: string, count: number, maximum: number): void {
+  if (count > maximum) throw contextLimitError(category);
+}
+
+/** Exported for exact boundary verification without disclosing any context. */
+export function assertAgentProviderInputWithinLimits(input: Omit<AgentProviderInput, "signal">): void {
+  const { family } = input;
+  assertContextCount("member count", family.members.length, AGENT_PROVIDER_CONTEXT_LIMITS.members);
+  assertContextCount(
+    "relationship count",
+    family.relationships.length,
+    AGENT_PROVIDER_CONTEXT_LIMITS.relationships,
+  );
+  const effectiveRelationshipReferences = family.effectiveRelationships.reduce(
+    (total, relationship) =>
+      total +
+      relationship.parentMemberIds.length +
+      relationship.spouseMemberIds.length +
+      relationship.siblingMemberIds.length +
+      relationship.childMemberIds.length,
+    0,
+  );
+  assertContextCount(
+    "effective relationship graph",
+    effectiveRelationshipReferences,
+    AGENT_PROVIDER_CONTEXT_LIMITS.effectiveRelationshipReferences,
+  );
+  assertContextCount(
+    "gathering count",
+    family.engagement.gatherings.length,
+    AGENT_PROVIDER_CONTEXT_LIMITS.gatherings,
+  );
+  assertContextCount(
+    "gathering invitation roster",
+    family.engagement.gatherings.reduce((total, gathering) => total + gathering.invitationStatuses.length, 0),
+    AGENT_PROVIDER_CONTEXT_LIMITS.invitationStatuses,
+  );
+  assertContextCount("memory count", family.engagement.memories.length, AGENT_PROVIDER_CONTEXT_LIMITS.memories);
+  assertContextCount("plan count", family.engagement.plans.length, AGENT_PROVIDER_CONTEXT_LIMITS.plans);
+
+  let serialized: string;
+  try {
+    serialized = JSON.stringify({
+      currentRequest: input.request,
+      previousConversation: input.history,
+      permittedFamilyContext: family,
+    });
+  } catch {
+    throw contextLimitError("context payload");
+  }
+  assertContextCount(
+    "context payload",
+    Buffer.byteLength(serialized, "utf8"),
+    AGENT_PROVIDER_CONTEXT_LIMITS.serializedBytes,
+  );
+}
 
 export function purgeExpiredAgentSessions(database: AppDatabase, at = new Date()): number {
   const cutoff = new Date(at.getTime() - AGENT_TRANSCRIPT_RETENTION_DAYS * 24 * 60 * 60 * 1_000).toISOString();
@@ -687,6 +862,27 @@ function getOwnedProposal(database: AppDatabase, proposalId: string, userId: str
   return proposal;
 }
 
+function assertExpectedProposalAction(
+  proposal: ActionProposalRow,
+  expectedActionType: AgentActionType | undefined,
+): void {
+  if (expectedActionType && proposal.action_type !== expectedActionType) {
+    throw new HttpError(
+      409,
+      "PROPOSAL_ACTION_MISMATCH",
+      "The proposal action no longer matches the action shown for approval. No family data was changed.",
+    );
+  }
+}
+
+function proposalExpirationTime(proposal: ActionProposalRow): number {
+  const expirationTime = new Date(proposal.expires_at).getTime();
+  if (!Number.isFinite(expirationTime)) {
+    throw new HttpError(409, "INVALID_STORED_PROPOSAL", "The stored proposal is invalid.");
+  }
+  return expirationTime;
+}
+
 function getPermittedFamilyContext(
   database: AppDatabase,
   membership: Membership,
@@ -703,7 +899,8 @@ function getPermittedFamilyContext(
        LEFT JOIN member_locations ml ON ml.member_id = m.id AND ml.family_id = m.family_id
        LEFT JOIN location_consents lc ON lc.id = ml.consent_id AND lc.revoked_at IS NULL
        WHERE m.family_id = ?
-       ORDER BY m.display_name COLLATE NOCASE, m.id`,
+       ORDER BY m.display_name COLLATE NOCASE, m.id
+       LIMIT ${AGENT_PROVIDER_CONTEXT_LIMITS.members + 1}`,
     )
     .all(membership.familyId) as Array<{
     id: string;
@@ -718,6 +915,7 @@ function getPermittedFamilyContext(
     expires_at: string | null;
     active_consent_id: string | null;
   }>;
+  assertContextCount("member count", members.length, AGENT_PROVIDER_CONTEXT_LIMITS.members);
 
   const isAdmin = membership.role === "owner" || membership.role === "admin";
   const isPermittedLocation = (member: (typeof members)[number]) => {
@@ -778,7 +976,8 @@ function getPermittedFamilyContext(
   const relationships = database
     .prepare(
       `SELECT id, source_member_id, target_member_id, type
-       FROM relationships WHERE family_id = ? ORDER BY created_at, id`,
+       FROM relationships WHERE family_id = ? ORDER BY created_at, id
+       LIMIT ${AGENT_PROVIDER_CONTEXT_LIMITS.relationships + 1}`,
     )
     .all(membership.familyId) as Array<{
     id: string;
@@ -786,10 +985,35 @@ function getPermittedFamilyContext(
     target_member_id: string;
     type: z.infer<typeof relationshipTypeSchema>;
   }>;
+  assertContextCount("relationship count", relationships.length, AGENT_PROVIDER_CONTEXT_LIMITS.relationships);
+  const safeRelationships = relationships.map((relationship) => ({
+    id: relationship.id,
+    sourceMemberId: relationship.source_member_id,
+    targetMemberId: relationship.target_member_id,
+    type: relationship.type,
+  }));
+  const effectiveRelationships = buildEffectiveFamilyRelationships(safeMembers, safeRelationships);
+  assertContextCount(
+    "effective relationship graph",
+    effectiveRelationships.reduce(
+      (total, relationship) =>
+        total +
+        relationship.parentMemberIds.length +
+        relationship.spouseMemberIds.length +
+        relationship.siblingMemberIds.length +
+        relationship.childMemberIds.length,
+      0,
+    ),
+    AGENT_PROVIDER_CONTEXT_LIMITS.effectiveRelationshipReferences,
+  );
 
   const visibleGatheringRows = (isAdmin
     ? database
-        .prepare("SELECT id, title, status, start_at, completed_at, created_by_user_id FROM gatherings WHERE family_id = ? ORDER BY start_at, id")
+        .prepare(
+          `SELECT id, title, status, start_at, completed_at, created_by_user_id
+           FROM gatherings WHERE family_id = ? ORDER BY start_at, id
+           LIMIT ${AGENT_PROVIDER_CONTEXT_LIMITS.gatherings + 1}`,
+        )
         .all(membership.familyId)
     : database
         .prepare(
@@ -797,7 +1021,8 @@ function getPermittedFamilyContext(
            FROM gatherings g
            LEFT JOIN gathering_invitations gi ON gi.gathering_id = g.id
            WHERE g.family_id = ? AND (g.created_by_user_id = ? OR gi.member_id = ?)
-           ORDER BY g.start_at, g.id`,
+           ORDER BY g.start_at, g.id
+           LIMIT ${AGENT_PROVIDER_CONTEXT_LIMITS.gatherings + 1}`,
         )
         .all(membership.familyId, userId, membership.linkedMemberId)) as Array<{
     id: string;
@@ -807,7 +1032,13 @@ function getPermittedFamilyContext(
     completed_at: string | null;
     created_by_user_id: string;
   }>;
+  assertContextCount(
+    "gathering count",
+    visibleGatheringRows.length,
+    AGENT_PROVIDER_CONTEXT_LIMITS.gatherings,
+  );
 
+  let invitationStatusCount = 0;
   const gatherings: AgentGatheringContext[] = visibleGatheringRows.map((gathering) => {
     const maySeeFullRoster = isAdmin || gathering.created_by_user_id === userId;
     const invitationRows = database
@@ -821,6 +1052,19 @@ function getPermittedFamilyContext(
       display_name: string;
       status: "pending" | "going" | "maybe" | "declined";
     }>;
+    const invitationStatuses = invitationRows
+      .filter((invitation) => maySeeFullRoster || invitation.member_id === membership.linkedMemberId)
+      .map((invitation) => ({
+        memberId: invitation.member_id,
+        memberName: invitation.display_name,
+        status: invitation.status,
+      }));
+    invitationStatusCount += invitationStatuses.length;
+    assertContextCount(
+      "gathering invitation roster",
+      invitationStatusCount,
+      AGENT_PROVIDER_CONTEXT_LIMITS.invitationStatuses,
+    );
     return {
       id: gathering.id,
       title: gathering.title,
@@ -833,13 +1077,7 @@ function getPermittedFamilyContext(
         gathering.status !== "cancelled",
       canComplete:
         isAdmin && gathering.status === "inviting" && new Date(gathering.start_at).getTime() <= now.getTime(),
-      invitationStatuses: invitationRows
-        .filter((invitation) => maySeeFullRoster || invitation.member_id === membership.linkedMemberId)
-        .map((invitation) => ({
-          memberId: invitation.member_id,
-          memberName: invitation.display_name,
-          status: invitation.status,
-        })),
+      invitationStatuses,
     };
   });
 
@@ -851,9 +1089,31 @@ function getPermittedFamilyContext(
                 SELECT 1 FROM memory_viewers mv
                 WHERE mv.memory_id = m.id AND mv.member_id = ?
               ) AS selected_for_requester
-       FROM memories m WHERE m.family_id = ? ORDER BY m.captured_at DESC, m.id`,
+       FROM memories m
+       WHERE m.family_id = ?
+         AND m.ai_processing_allowed = 1
+         AND (
+           m.created_by_user_id = ?
+           OR m.visibility = 'family'
+           OR (? = 1 AND m.visibility = 'family_admin')
+           OR (
+             m.visibility = 'selected'
+             AND EXISTS(
+               SELECT 1 FROM memory_viewers visible_mv
+               WHERE visible_mv.memory_id = m.id AND visible_mv.member_id = ?
+             )
+           )
+         )
+       ORDER BY m.captured_at DESC, m.id
+       LIMIT ${AGENT_PROVIDER_CONTEXT_LIMITS.memories + 1}`,
     )
-    .all(membership.linkedMemberId, membership.familyId) as Array<{
+    .all(
+      membership.linkedMemberId,
+      membership.familyId,
+      userId,
+      isAdmin ? 1 : 0,
+      membership.linkedMemberId,
+    ) as Array<{
     id: string;
     title: string;
     memory_type: AgentMemoryContext["memoryType"];
@@ -863,14 +1123,8 @@ function getPermittedFamilyContext(
     ai_processing_allowed: 0 | 1;
     selected_for_requester: 0 | 1;
   }>;
-  const visibleMemoryRows = memoryRows.filter(
-    (memory) =>
-      Boolean(memory.ai_processing_allowed) &&
-      (memory.created_by_user_id === userId ||
-        memory.visibility === "family" ||
-        (memory.visibility === "family_admin" && isAdmin) ||
-        (memory.visibility === "selected" && Boolean(memory.selected_for_requester))),
-  );
+  const visibleMemoryRows = memoryRows;
+  assertContextCount("memory count", visibleMemoryRows.length, AGENT_PROVIDER_CONTEXT_LIMITS.memories);
   const memories: AgentMemoryContext[] = visibleMemoryRows.map((memory) => ({
     id: memory.id,
     title: memory.title,
@@ -882,11 +1136,17 @@ function getPermittedFamilyContext(
 
   const planRows = (isAdmin
     ? database
-        .prepare("SELECT id, title, status, created_by_user_id FROM reconnection_plans WHERE family_id = ? ORDER BY created_at DESC, id")
+        .prepare(
+          `SELECT id, title, status, created_by_user_id FROM reconnection_plans
+           WHERE family_id = ? ORDER BY created_at DESC, id
+           LIMIT ${AGENT_PROVIDER_CONTEXT_LIMITS.plans + 1}`,
+        )
         .all(membership.familyId)
     : database
         .prepare(
-          "SELECT id, title, status, created_by_user_id FROM reconnection_plans WHERE family_id = ? AND created_by_user_id = ? ORDER BY created_at DESC, id",
+          `SELECT id, title, status, created_by_user_id FROM reconnection_plans
+           WHERE family_id = ? AND created_by_user_id = ? ORDER BY created_at DESC, id
+           LIMIT ${AGENT_PROVIDER_CONTEXT_LIMITS.plans + 1}`,
         )
         .all(membership.familyId, userId)) as Array<{
     id: string;
@@ -894,6 +1154,7 @@ function getPermittedFamilyContext(
     status: AgentPlanContext["status"];
     created_by_user_id: string;
   }>;
+  assertContextCount("plan count", planRows.length, AGENT_PROVIDER_CONTEXT_LIMITS.plans);
   const plans: AgentPlanContext[] = planRows.map((plan) => ({
     id: plan.id,
     title: plan.title,
@@ -1047,12 +1308,8 @@ function getPermittedFamilyContext(
     timezone: "Asia/Dubai",
     requester: { role: membership.role, linkedMemberId: membership.linkedMemberId },
     members: safeMembers,
-    relationships: relationships.map((relationship) => ({
-      id: relationship.id,
-      sourceMemberId: relationship.source_member_id,
-      targetMemberId: relationship.target_member_id,
-      type: relationship.type,
-    })),
+    relationships: safeRelationships,
+    effectiveRelationships,
     engagement: {
       evidenceSignals,
       sampleActivities: sampleActivities.map((activity) => ({
@@ -1084,12 +1341,12 @@ function readHistory(database: AppDatabase, sessionId: string): AgentProviderInp
   const rows = database
     .prepare(
       `SELECT role, content_text FROM (
-         SELECT id, role, content_text, created_at
+         SELECT role, content_text, message_order
          FROM agent_messages
          WHERE session_id = ?
-         ORDER BY created_at DESC, id DESC
+         ORDER BY message_order DESC
          LIMIT 20
-       ) ORDER BY created_at, id`,
+       ) ORDER BY message_order`,
     )
     .all(sessionId) as Array<{ role: "user" | "assistant"; content_text: string }>;
   return rows.map((row) => ({ role: row.role, message: row.content_text }));
@@ -1099,17 +1356,862 @@ function insertMessage(
   database: AppDatabase,
   sessionId: string,
   role: "user" | "assistant",
-  kind: "message" | "clarification" | "proposal" | "result",
+  kind: "message" | "clarification" | "proposal" | "result" | "gathering_planner",
   content: string,
   createdAt: string,
-): void {
+  payload?: unknown,
+): string {
+  const id = randomUUID();
   database
     .prepare(
-      `INSERT INTO agent_messages (id, session_id, role, kind, content_text, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agent_messages
+       (id, session_id, role, kind, content_text, payload_json, message_order, created_at)
+       SELECT ?, ?, ?, ?, ?, ?, COALESCE(MAX(message_order), 0) + 1, ?
+       FROM agent_messages WHERE session_id = ?`,
     )
-    .run(randomUUID(), sessionId, role, kind, content, createdAt);
+    .run(
+      id,
+      sessionId,
+      role,
+      kind,
+      content,
+      payload === undefined ? null : JSON.stringify(payload),
+      createdAt,
+      sessionId,
+    );
   database.prepare("UPDATE agent_sessions SET updated_at = ? WHERE id = ?").run(createdAt, sessionId);
+  return id;
+}
+
+interface RequestedScheduleEvidence {
+  hasDate: boolean;
+  hasTime: boolean;
+  localDate?: string;
+  localTime?: string;
+  ambiguousTime?: string;
+  invalidDate?: boolean;
+  invalidTime?: boolean;
+}
+
+const monthNumbers: Record<string, number> = {
+  january: 1,
+  jan: 1,
+  february: 2,
+  feb: 2,
+  march: 3,
+  mar: 3,
+  april: 4,
+  apr: 4,
+  may: 5,
+  june: 6,
+  jun: 6,
+  july: 7,
+  jul: 7,
+  august: 8,
+  aug: 8,
+  september: 9,
+  sep: 9,
+  sept: 9,
+  october: 10,
+  oct: 10,
+  november: 11,
+  nov: 11,
+  december: 12,
+  dec: 12,
+};
+const monthPattern = Object.keys(monthNumbers).join("|");
+const weekdayNumbers: Record<string, number> = {
+  sunday: 0,
+  monday: 1,
+  tuesday: 2,
+  wednesday: 3,
+  thursday: 4,
+  friday: 5,
+  saturday: 6,
+};
+
+function datePartsInDubai(value: Date): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dubai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((item) => item.type === type)?.value);
+  return { year: part("year"), month: part("month"), day: part("day") };
+}
+
+function formatLocalDate(year: number, month: number, day: number): string | undefined {
+  const candidate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    candidate.getUTCFullYear() !== year ||
+    candidate.getUTCMonth() + 1 !== month ||
+    candidate.getUTCDate() !== day
+  ) {
+    return undefined;
+  }
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function addLocalDays(parts: { year: number; month: number; day: number }, days: number): string {
+  const value = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+  return formatLocalDate(value.getUTCFullYear(), value.getUTCMonth() + 1, value.getUTCDate())!;
+}
+
+function extractRequestedSchedule(referenceText: string, at: Date): RequestedScheduleEvidence {
+  const dubaiToday = datePartsInDubai(at);
+  const today = formatLocalDate(dubaiToday.year, dubaiToday.month, dubaiToday.day)!;
+  const localDateFromTurn = (
+    turn: string,
+  ): { kind: "none" } | { kind: "invalid" } | { kind: "valid"; localDate: string } => {
+    const isoDate = turn.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+    if (isoDate) {
+      const localDate = formatLocalDate(Number(isoDate[1]), Number(isoDate[2]), Number(isoDate[3]));
+      return localDate ? { kind: "valid", localDate } : { kind: "invalid" };
+    }
+
+    const monthFirst = turn.match(
+      new RegExp(`\\b(${monthPattern})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`, "i"),
+    );
+    const dayFirst = turn.match(
+      new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?(?:\\s+of)?\\s+(${monthPattern})(?:,?\\s+(\\d{4}))?\\b`, "i"),
+    );
+    const namedDate = [monthFirst, dayFirst]
+      .filter((match): match is RegExpMatchArray => Boolean(match))
+      .sort((left, right) => (left.index ?? 0) - (right.index ?? 0))[0];
+    if (namedDate) {
+      const isMonthFirst = namedDate === monthFirst;
+      const monthName = (isMonthFirst ? namedDate[1] : namedDate[2]).toLocaleLowerCase("en");
+      const day = Number(isMonthFirst ? namedDate[2] : namedDate[1]);
+      let year = Number(namedDate[3] ?? dubaiToday.year);
+      let candidate = formatLocalDate(year, monthNumbers[monthName], day);
+      if (!namedDate[3] && candidate && candidate < today) {
+        year += 1;
+        candidate = formatLocalDate(year, monthNumbers[monthName], day);
+      }
+      return candidate ? { kind: "valid", localDate: candidate } : { kind: "invalid" };
+    }
+
+    const numericDate = turn.match(/\b(\d{1,2})[/.](\d{1,2})(?:[/.](\d{4}))?\b/);
+    if (numericDate) {
+      // The application locale is UAE, so slash/dot dates are interpreted as day/month/year.
+      let year = Number(numericDate[3] ?? dubaiToday.year);
+      let candidate = formatLocalDate(year, Number(numericDate[2]), Number(numericDate[1]));
+      if (!numericDate[3] && candidate && candidate < today) {
+        year += 1;
+        candidate = formatLocalDate(year, Number(numericDate[2]), Number(numericDate[1]));
+      }
+      return candidate ? { kind: "valid", localDate: candidate } : { kind: "invalid" };
+    }
+
+    if (/\bday\s+after\s+tomorrow\b/i.test(turn)) {
+      return { kind: "valid", localDate: addLocalDays(dubaiToday, 2) };
+    }
+    if (/\btomorrow\b/i.test(turn)) return { kind: "valid", localDate: addLocalDays(dubaiToday, 1) };
+    if (/\b(?:today|tonight)\b/i.test(turn)) {
+      return { kind: "valid", localDate: addLocalDays(dubaiToday, 0) };
+    }
+
+    const weekday = turn.match(
+      /\b(?:(next|this)\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i,
+    );
+    if (!weekday) return { kind: "none" };
+    const base = new Date(Date.UTC(dubaiToday.year, dubaiToday.month - 1, dubaiToday.day));
+    let delta = (weekdayNumbers[weekday[2].toLocaleLowerCase("en")] - base.getUTCDay() + 7) % 7;
+    if (weekday[1]?.toLocaleLowerCase("en") === "next" && delta === 0) delta = 7;
+    return { kind: "valid", localDate: addLocalDays(dubaiToday, delta) };
+  };
+
+  const localTimeFromTurn = (
+    turn: string,
+  ): { localTime?: string; ambiguousTime?: string; invalidTime?: boolean } => {
+    if (/\bnoon\b/i.test(turn)) return { localTime: "12:00" };
+    if (/\bmidnight\b/i.test(turn)) return { localTime: "00:00" };
+    const colonTime = turn.match(
+      /\b(?:at\s+)?(\d{1,3}):(\d{1,3})(?::(\d{1,3})(?:\.(\d+))?)?\s*(a\.?m\.?|p\.?m\.?)?\b/i,
+    );
+    if (colonTime) {
+      let hour = Number(colonTime[1]);
+      const minute = Number(colonTime[2]);
+      const seconds = colonTime[3] === undefined ? 0 : Number(colonTime[3]);
+      const hasNonZeroFraction = Boolean(colonTime[4] && /[1-9]/.test(colonTime[4]));
+      const meridiem = colonTime[5]?.replace(/\./g, "").toLocaleLowerCase("en");
+      const hourIsValid = meridiem ? hour >= 1 && hour <= 12 : hour >= 0 && hour <= 23;
+      if (!hourIsValid || minute > 59 || seconds > 59 || seconds !== 0 || hasNonZeroFraction) {
+        return { invalidTime: true };
+      }
+      if (!meridiem && hour >= 1 && hour <= 12) {
+        return { ambiguousTime: `${colonTime[1]}:${colonTime[2].padStart(2, "0")}` };
+      }
+      if (meridiem === "am" && hour === 12) hour = 0;
+      if (meridiem === "pm" && hour < 12) hour += 12;
+      return { localTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}` };
+    }
+
+    const hourTime = turn.match(/\b(?:at\s+)?(\d{1,3})\s*(a\.?m\.?|p\.?m\.?)\b/i);
+    if (!hourTime) return {};
+    let hour = Number(hourTime[1]);
+    if (hour < 1 || hour > 12) return { invalidTime: true };
+    const meridiem = hourTime[2].replace(/\./g, "").toLocaleLowerCase("en");
+    if (meridiem === "am" && hour === 12) hour = 0;
+    if (meridiem === "pm" && hour < 12) hour += 12;
+    return { localTime: `${String(hour).padStart(2, "0")}:00` };
+  };
+
+  // Later answers override earlier details while missing halves still fall
+  // back to the original planning request. An explicit invalid value is
+  // evidence too: it blocks fallback so an older valid value is never used
+  // in place of the user's newest correction.
+  const turnsNewestFirst = referenceText.split("\n").reverse();
+  let localDate: string | undefined;
+  let invalidDate = false;
+  for (const turn of turnsNewestFirst) {
+    const parsed = localDateFromTurn(turn);
+    if (parsed.kind === "invalid") {
+      invalidDate = true;
+      break;
+    }
+    if (parsed.kind === "valid") {
+      localDate = parsed.localDate;
+      break;
+    }
+  }
+  let localTime: string | undefined;
+  let ambiguousTime: string | undefined;
+  let invalidTime = false;
+  let meridiemAnswer: "am" | "pm" | undefined;
+  for (const turn of turnsNewestFirst) {
+    const meridiemOnly = turn.match(/^\s*(?:it(?:'s|\s+is)\s+)?(a\.?m\.?|p\.?m\.?)(?:\s+please)?[.!]?\s*$/i);
+    if (meridiemOnly && !meridiemAnswer) {
+      meridiemAnswer = meridiemOnly[1].replace(/\./g, "").toLocaleLowerCase("en") as "am" | "pm";
+      continue;
+    }
+    const parsed = localTimeFromTurn(turn);
+    if (parsed.invalidTime) {
+      invalidTime = true;
+      break;
+    }
+    if (parsed.ambiguousTime && meridiemAnswer) {
+      const [rawHour, rawMinute] = parsed.ambiguousTime.split(":");
+      let hour = Number(rawHour);
+      if (meridiemAnswer === "am" && hour === 12) hour = 0;
+      if (meridiemAnswer === "pm" && hour < 12) hour += 12;
+      localTime = `${String(hour).padStart(2, "0")}:${rawMinute}`;
+      break;
+    }
+    if (parsed.localTime || parsed.ambiguousTime) {
+      localTime = parsed.localTime;
+      ambiguousTime = parsed.ambiguousTime;
+      break;
+    }
+  }
+
+  return {
+    hasDate: Boolean(localDate),
+    hasTime: Boolean(localTime),
+    ...(localDate ? { localDate } : {}),
+    ...(localTime ? { localTime } : {}),
+    ...(ambiguousTime ? { ambiguousTime } : {}),
+    ...(invalidDate ? { invalidDate: true } : {}),
+    ...(invalidTime ? { invalidTime: true } : {}),
+  };
+}
+
+function plannerLocalSchedule(startAt: string): { localDate: string; localTime: string } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dubai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(startAt));
+  const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "";
+  return {
+    localDate: `${value("year")}-${value("month")}-${value("day")}`,
+    localTime: `${value("hour")}:${value("minute")}`,
+  };
+}
+
+const GATHERING_PLANNER_MESSAGE =
+  "I prepared an editable gathering plan using the venue label you provided. The venue has not been verified. Review every detail before saving; nothing has been created or sent.";
+
+const unsafeGatheringLanguage = [
+  /\b(negligent|neglectful|uncaring|selfish|toxic|dysfunctional|estranged|isolated|lonely)\b/i,
+  /\b(doesn'?t care|do not care|does not care|never makes an effort|avoids? (?:the )?family)\b/i,
+  /\b(depressed|anxious|emotionally unhealthy|mental(?:ly)? ill|emotionally unstable)\b/i,
+  /\b(dementia|alzheimer'?s?|diabetes|diabetic|diagnos(?:is|ed)|medical condition|mental health problem)\b/i,
+  /\b(absent|distant|disconnected)\b/i,
+];
+
+function normalizeEvidenceText(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("en")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+const normalizedPlannerNoteCueSource =
+  "\\b(?:notes?(?:\\s+is)?|remember\\s+to|please\\s+(?:bring|arrive|wear|avoid|do|make|allow)|bring|arrive|wear|avoid|do\\s+not\\s+bring|don\\s+t\\s+bring|cannot\\s+bring|needs?|keep\\s+it\\s+under|spend|budget|cost(?:s|ing)?|transport(?:ation)?|ride|carpool|taxi|car|bus|metro|parking|picnic\\s+blanket|blanket|folding\\s+chairs?|chairs?|equipment|required|sunscreen|sunblock|rain(?:s|ing)?|rain\\s+backup(?:\\s+plan)?|weather|weather\\s+backup(?:\\s+plan)?|indoor(?:\\s+(?:area|backup))?|umbrella|accessibility|accessible|wheelchair|dietary|allerg(?:y|ies|ic)|medicine|medication|medical|diabetes|diabetic|halal|kosher|vegan|vegetarian|pescatarian|gluten\\s+free|dairy\\s+free|lactose\\s+free|nut\\s+free|peanut\\s+free|sugar\\s+free)\\b";
+
+function normalizedPlannerNoteCueRanges(value: string): Array<{ start: number; end: number }> {
+  return [...value.matchAll(new RegExp(normalizedPlannerNoteCueSource, "giu"))].map((match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+  }));
+}
+
+function isGroundedPlannerNote(note: string, referenceText: string): boolean {
+  const noteClauses = note
+    .split(/[.!?;\n]+/u)
+    .map(normalizeEvidenceText)
+    .filter(Boolean);
+  const referenceClauses = referenceText
+    .split(/[.!?;\n]+/u)
+    .map(normalizeEvidenceText)
+    .filter(Boolean)
+    .map((text) => ({ text, cueRanges: normalizedPlannerNoteCueRanges(text) }))
+    .filter((clause) => clause.cueRanges.length > 0);
+  const negation = /\b(?:not|never|cannot|can\s+t|don\s+t|do\s+not|without|avoid)\b/;
+  return (
+    noteClauses.length > 0 &&
+    noteClauses.every((noteClause) =>
+      referenceClauses.some((referenceClause) => {
+        let index = referenceClause.text.indexOf(noteClause);
+        while (index >= 0) {
+          const noteEnd = index + noteClause.length;
+          const followsOrOverlapsCue = referenceClause.cueRanges.some((cue) => noteEnd >= cue.start);
+          const omittedPrefix = referenceClause.text.slice(0, index);
+          if (followsOrOverlapsCue && (negation.test(noteClause) || !negation.test(omittedPrefix))) {
+            return true;
+          }
+          index = referenceClause.text.indexOf(noteClause, index + 1);
+        }
+        return false;
+      }),
+    )
+  );
+}
+
+function hasUserSuppliedPlannerNote(referenceText: string): boolean {
+  return normalizedPlannerNoteCueRanges(normalizeEvidenceText(referenceText)).length > 0;
+}
+
+function latestCorrectivePlannerNote(referenceText: string): string | undefined {
+  const correctionOrNegation =
+    /\b(?:actually|instead|rather\s+than|replace|change|remove|omit|no\s+notes?|not|never|cannot|can'?t|don'?t|do\s+not|without|avoid)\b/i;
+  const turns = referenceText.split("\n");
+  for (let index = turns.length - 1; index > 0; index -= 1) {
+    const turn = turns[index];
+    if (
+      correctionOrNegation.test(turn) &&
+      normalizedPlannerNoteCueRanges(normalizeEvidenceText(turn)).length > 0 &&
+      turns.slice(0, index).some((earlier) => hasUserSuppliedPlannerNote(earlier))
+    ) {
+      return turn;
+    }
+  }
+  return undefined;
+}
+
+function gatheringTypesInText(referenceText: string): GatheringPlannerType[] {
+  const supported: GatheringPlannerType[] = [];
+  const add = (candidate: GatheringPlannerType, pattern: RegExp) => {
+    if (pattern.test(referenceText) && !supported.includes(candidate)) supported.push(candidate);
+  };
+  add("Video call", /\b(?:video|virtual|online)\s+(?:call|chat|meeting|gathering)\b|\bzoom\b|\bgoogle\s+meet\b/i);
+  const phoneEvidence = referenceText.replace(/\b(?:video|virtual|online)\s+call\b/giu, "");
+  if (/\bphone\s+call\b|\bcall\s+(?:with\s+)?(?:my\s+)?\p{L}/iu.test(phoneEvidence)) {
+    supported.push("Phone call");
+  }
+  add("Celebration", /\b(?:birthday|anniversary|celebration|party)\b/i);
+  add("Meal", /\b(?:meal|dinner|lunch|breakfast|tea|coffee|brunch)\b/i);
+  add("Visit", /\bvisit(?:ing)?\b/i);
+  add("Majlis", /\bmajlis\b/i);
+  add("Outdoor activity", /\b(?:park|picnic|outdoor|outing|garden|beach)\b/i);
+  add("Family gathering", /\b(?:family\s+gathering|get[ -]together|gathering)\b/i);
+  return supported;
+}
+
+const plannerEvidenceSegments = (referenceText: string) =>
+  referenceText.split(/[\n.!?;]+/u).map((segment) => segment.trim()).filter(Boolean);
+
+const plannerCorrectionCue = /\b(?:actually|instead|rather\s+than|replace|switch|change|make\s+it|use)\b/i;
+
+function gatheringTypeAtStart(value: string): GatheringPlannerType | undefined {
+  const target = normalizeEvidenceText(value)
+    .replace(/^(?:(?:actually|plan|schedule|use)\s+)+/, "")
+    .replace(/^(?:a|an|the)\s+/, "");
+  if (/^(?:video|virtual|online)\s+(?:call|chat|meeting|gathering)\b|^(?:zoom|google\s+meet)\b/.test(target)) {
+    return "Video call";
+  }
+  if (/^(?:phone\s+call|call\s+(?:with\s+)?(?:my\s+)?\p{L})\b/u.test(target)) return "Phone call";
+  if (/^(?:birthday|anniversary|celebration|party)\b/.test(target)) return "Celebration";
+  if (/^(?:(?:family)\s+)?(?:meal|dinner|lunch|breakfast|brunch)\b/.test(target)) return "Meal";
+  if (/^(?:(?:family)\s+)?visit\b/.test(target)) return "Visit";
+  if (/^majlis\b/.test(target)) return "Majlis";
+  if (/^(?:outdoor\s+activity|picnic|outing)\b/.test(target)) return "Outdoor activity";
+  if (/^(?:family\s+gathering|get\s+together|gathering)\b/.test(target)) return "Family gathering";
+  return undefined;
+}
+
+function explicitGatheringTypeCorrection(segment: string): GatheringPlannerType | undefined {
+  const normalized = normalizeEvidenceText(segment);
+  const switchTarget = normalized.match(/\b(?:switch|change|move)\b.*\b(?:to|into)\s+(.+)$/)?.[1];
+  const replaceTarget = normalized.match(/\breplace\b.*\bwith\s+(.+)$/)?.[1];
+  const makeTarget = normalized.match(/\bmake\s+(?:it|the\s+(?:plan|gathering|type))\s+(.+)$/)?.[1];
+  const ratherTarget = normalized.match(/^(.+?)\s+rather\s+than\s+.+$/)?.[1];
+  const insteadTarget = normalized.match(/^(.+?)\s+instead(?:\s+of\s+.+)?$/)?.[1];
+  const actuallyTarget = normalized.match(/^actually\s+(.+)$/)?.[1];
+  const target = switchTarget ?? replaceTarget ?? makeTarget ?? ratherTarget ?? insteadTarget ?? actuallyTarget;
+  return target ? gatheringTypeAtStart(target) : undefined;
+}
+
+function isExplicitLocationCorrectionSegment(turn: string): boolean {
+  const normalized = normalizeEvidenceText(turn);
+  const locationNoun = /\b(?:park|garden|beach|mall|home|house|restaurant|cafe|cafeteria|hotel|majlis|museum|mosque|club|centre|center|venue|location|place)\b/;
+  if (/\b(?:switch|change|move)\b.*\b(?:to|into)\s+\p{L}/u.test(normalized)) {
+    return locationNoun.test(normalized);
+  }
+  if (/\breplace\b.*\bwith\s+\p{L}/u.test(normalized)) return locationNoun.test(normalized);
+  if (/\b(?:use|choose|at|in|inside|go\s+to)\b.+\binstead\b/u.test(normalized)) {
+    if (/\b(?:whats\s*app|share|copyable|links?)\b/.test(normalized) && !locationNoun.test(normalized)) {
+      return false;
+    }
+    return true;
+  }
+  if (/\brather\s+than\b/.test(normalized) && locationNoun.test(normalized)) return true;
+  return /\bactually\b.+\binstead\b/.test(normalized) && locationNoun.test(normalized);
+}
+
+function groundedGatheringType(
+  type: GatheringPlannerType,
+  referenceText: string,
+): { type: GatheringPlannerType; correctionMismatch: boolean } {
+  const correctionType = plannerEvidenceSegments(referenceText)
+    .reverse()
+    .map(explicitGatheringTypeCorrection)
+    .find((candidate): candidate is GatheringPlannerType => Boolean(candidate));
+  const typeEvidence = plannerEvidenceSegments(referenceText)
+    .filter((segment) => {
+      if (!plannerCorrectionCue.test(segment) || explicitGatheringTypeCorrection(segment)) return true;
+      if (isExplicitLocationCorrectionSegment(segment)) return false;
+      return !/\b(?:bring|notes?|remember|avoid|without|don'?t|do\s+not|with|invite|inviting|include|including|meet)\b/i.test(
+        segment,
+      );
+    })
+    .join("\n");
+  const supported = correctionType ? [correctionType] : gatheringTypesInText(typeEvidence);
+  if (supported.length === 0) return { type: "Family gathering", correctionMismatch: false };
+  if (correctionType && correctionType !== type) {
+    return { type: correctionType, correctionMismatch: true };
+  }
+  return {
+    type: supported.includes(type) ? type : supported[0],
+    correctionMismatch: false,
+  };
+}
+
+function deterministicGatheringCopy(type: GatheringPlannerType, locationName: string): { title: string; purpose: string } {
+  const suffixByType: Record<GatheringPlannerType, string> = {
+    "Family gathering": "family gathering",
+    Majlis: "family majlis",
+    Meal: "family meal",
+    "Outdoor activity": "family outing",
+    Celebration: "family celebration",
+    Visit: "family visit",
+    "Phone call": "Family phone call",
+    "Video call": "Family video call",
+  };
+  if (type === "Phone call" || type === "Video call") {
+    return {
+      title: suffixByType[type],
+      purpose: type === "Phone call" ? "Spend time together on a phone call" : "Spend time together on a video call",
+    };
+  }
+  const suffix = suffixByType[type];
+  const maximumLocationLength = Math.max(1, 120 - suffix.length - 1);
+  const titleLocation =
+    locationName.length > maximumLocationLength
+      ? `${locationName.slice(0, Math.max(1, maximumLocationLength - 3))}...`
+      : locationName;
+  return {
+    title: `${titleLocation} ${suffix}`,
+    purpose: `Spend time together at ${locationName}`,
+  };
+}
+
+function userRequestedRemoteGathering(referenceText: string): boolean {
+  return /\b(?:phone|video|virtual|online)\s+(?:call|chat|meeting|gathering)\b|\b(?:zoom|facetime|google\s+meet|teams)\b|\bcall\s+(?:with\s+)?(?:my\s+)?\p{L}/iu.test(
+    referenceText,
+  );
+}
+
+function physicalLocationIsGrounded(
+  locationName: string,
+  type: GatheringPlannerType,
+  request: string,
+  history: AgentProviderInput["history"],
+  referenceText: string,
+): boolean {
+  if ((type === "Phone call" || type === "Video call") && userRequestedRemoteGathering(referenceText)) return true;
+  const location = normalizeEvidenceText(locationName);
+  const reference = normalizeEvidenceText(referenceText);
+  if (!location || ["dinner", "lunch", "breakfast", "meal", "gathering", "outing", "visit"].includes(location)) {
+    return false;
+  }
+  const escapedLocation = location.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  const negatedLocation = new RegExp(
+    `\\b(?:not|avoid|instead\\s+of|rather\\s+than|replace|from)\\s+(?:the\\s+)?${escapedLocation}(?=\\b)`,
+    "iu",
+  );
+  if (negatedLocation.test(reference)) return false;
+  const dateBoundary =
+    "(?:(?:the\\s+)?day\\s+after\\s+tomorrow|today|tomorrow|tonight|(?:next|this|coming)\\s+\\p{L}+|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)|(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)|\\d{1,4}(?:st|nd|rd|th)?)";
+  // A grounded label must end where the user's venue mention ends. Merely
+  // finding the provider label as a prefix ("Golden" in "Golden Park") is
+  // not enough evidence for changing the venue shown in the editable form.
+  const locationEnd =
+    `(?=$|\\s+(?:(?:actually|use|instead|rather|with|invite|inviting|include|including|bring|solo|alone|nobody)\\b|no\\s+one\\b|by\\s+myself\\b|and\\s+(?:invite|include|bring)\\b|on\\s+${dateBoundary}\\b|at\\s+(?:\\d{1,2}(?::\\d{2})?|noon|midnight)\\b|${dateBoundary}\\b|please\\b))`;
+  const contextualLocation = new RegExp(
+    `(?:^|\\s)(?:to|at|in|inside|visit|use|choose|location(?:\\s+is)?|(?:switch|change|move)\\s+to|make\\s+it)(?:\\s+the)?\\s+${escapedLocation}${locationEnd}`,
+    "iu",
+  );
+  if (contextualLocation.test(reference)) return true;
+  const bareLocation = new RegExp(`(?:^|\\s)${escapedLocation}${locationEnd}`, "iu");
+  if (
+    bareLocation.test(reference) &&
+    /\b(?:park|garden|beach|mall|home|house|restaurant|cafe|cafeteria|hotel|majlis|museum|mosque|club|centre|center)\b/.test(
+      location,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:home|house)\b/.test(location) &&
+    new RegExp(
+      `(?:^|\\s)(?:to|at|in)\\s+(?:(?:my|our|the|family|grandma'?s?|grandmother'?s?)\\s+)?(?:home|house)${locationEnd}`,
+      "iu",
+    ).test(reference)
+  ) {
+    return true;
+  }
+  const lastTurn = history.at(-1);
+  return Boolean(
+    lastTurn?.role === "assistant" &&
+      /where would/i.test(lastTurn.message) &&
+      bareLocation.test(normalizeEvidenceText(request)),
+  );
+}
+
+function latestLocationCorrection(referenceText: string): string | undefined {
+  return plannerEvidenceSegments(referenceText)
+    .reverse()
+    .find(isExplicitLocationCorrectionSegment);
+}
+
+function requestedInvitationChannel(referenceText: string): "share_link" | "whatsapp" {
+  for (const turn of referenceText.split("\n").reverse()) {
+    if (/\bwhats\s*app\b/i.test(turn)) {
+      if (
+        /\b(?:without|avoid|skip|except|exclude)\b[^.!?]*\bwhats\s*app\b|\b(?:don'?t|do\s+not|not|no)\b[^.!?]*\bwhats\s*app\b|\bwhats\s*app\b[^.!?]*\b(?:not\s+needed|isn'?t\s+needed|is\s+not\s+needed|no\s+thanks|unnecessary)\b/i.test(
+          turn,
+        )
+      ) {
+        return "share_link";
+      }
+      if (
+        /^\s*whats\s*app(?:\s+please)?[.!]?\s*$/i.test(turn) ||
+        /\b(?:use|via|through|send|share|invite|invitation|open)\b[^.!?]*\bwhats\s*app\b|\bwhats\s*app\b[^.!?]*\b(?:link|invite|invitation|please)\b/i.test(
+          turn,
+        )
+      ) {
+        return "whatsapp";
+      }
+    }
+    if (/\b(?:share|copyable|copy)\s+(?:a\s+)?links?\b|\blinks?\s+instead\b/i.test(turn)) return "share_link";
+  }
+  return "share_link";
+}
+
+const explicitGatheringActionRequestPattern = new RegExp(
+  [
+    "\\b(?:gathering\\s+draft|draft\\s+gathering)\\b",
+    "\\b(?:reconnection|relationship-repair)\\s+plan\\b",
+    "\\b(?:prepare|create|make|rotate|regenerate)\\b[^.!?\\n]{0,100}\\b(?:invitation|invite|rsvp|whats\\s*app|share)\\s+links?\\b",
+    "\\b(?:complete|finish|cancel|delete|remove|update|edit|reschedule)\\b[^.!?\\n]{0,100}\\bgathering\\b",
+  ].join("|"),
+  "iu",
+);
+const nonGatheringPlanningObjectPattern = new RegExp(
+  "\\b(?:plan|organize|organise|schedule|arrange|set\\s+up)\\b(?:\\s+(?:my|our|the|a|an))?\\s+(?:route|directions?|budget|cost(?:s|ing)?|transportation?|commute|drive|driving)\\b",
+  "iu",
+);
+const informationalGatheringPlanningPattern =
+  /^\s*(?:how\s+(?:do|can|should|would)\s+(?:i|we|someone|a\s+family|families)|tell\s+me\s+how\s+to)\s+(?:best\s+)?(?:plan|organize|organise|schedule|arrange)\b/iu;
+const abandonGatheringPlannerPattern =
+  /^\s*(?:never\s*mind|forget\s+(?:it|that)|cancel(?:\s+that)?|stop|leave\s+it)(?:\s|[.!?]|$)/iu;
+const directGatheringPlannerIntentPattern = new RegExp(
+  [
+    "\\b(?:plan|organize|organise|schedule|arrange|set\\s+up)\\b[^.!?\\n]{0,100}\\b(?:family\\s+gathering|gathering|get[ -]together|outing|activity|visit|meal|dinner|lunch|breakfast|tea|coffee|picnic|majlis|celebration|party|phone\\s+call|video\\s+call)\\b",
+    "\\b(?:i|we)\\s+(?:want|would\\s+like|would\\s+love|hope|plan)\\s+to\\s+(?:go|visit|meet|gather|have|eat)\\b",
+    "^\\s*(?:please\\s+)?(?:take|bring|meet|visit|go)\\b",
+    "^\\s*(?:family\\s+)?(?:dinner|lunch|breakfast|picnic|outing|gathering|visit)\\b",
+    "^\\s*(?:please\\s+)?(?:plan|organize|organise|schedule|arrange|set\\s+up)\\b[^.!?\\n]{0,100}\\b(?:park|garden|beach|mall|home|house|restaurant|cafe|cafeteria|hotel|majlis|museum|mosque|club|centre|center|office|farm|venue)\\b",
+  ].join("|"),
+  "iu",
+);
+const physicalGatheringVenuePattern = new RegExp(
+  "\\b(?:park|garden|beach|mall|home|house|restaurant|cafe|cafeteria|hotel|majlis|museum|mosque|club|centre|center|office|farm|venue)\\b",
+  "iu",
+);
+const remoteGatheringVenuePattern =
+  /\b(?:phone|video|virtual|online)\s+(?:call|chat|meeting|gathering)\b|\b(?:zoom|facetime|google\s+meet|teams)\b/iu;
+
+function stripNonInviteePlanningAdjuncts(value: string): string {
+  return value
+    .replace(/\bwith\s+(?:a\s+)?budget(?:\s+of)?\s+(?:aed\s*)?[\d,.]+\b/giu, "")
+    .replace(/\bwith\s+(?:the\s+)?transportation(?:\s+(?:arranged|included|provided))?\b/giu, "");
+}
+
+/** Distinguish an actionable natural planner turn from advice and legacy actions. */
+function isNaturalGatheringPlannerIntent(
+  request: string,
+  history: AgentProviderInput["history"],
+): boolean {
+  if (
+    explicitGatheringActionRequestPattern.test(request)
+    || nonGatheringPlanningObjectPattern.test(request)
+    || informationalGatheringPlanningPattern.test(request)
+  ) {
+    return false;
+  }
+  const followsPlannerClarification = history.at(-1)?.role === "assistant"
+    && isPlannerClarificationMessage(history.at(-1)!.message);
+  if (followsPlannerClarification && abandonGatheringPlannerPattern.test(request)) return false;
+  if (!followsPlannerClarification && !directGatheringPlannerIntentPattern.test(request)) return false;
+  return true;
+}
+
+/**
+ * Produce the safe question the server can establish from user text alone.
+ * This runs before accepting any non-planner provider decision, so missing
+ * facts can never be converted into a legacy or unrelated mutation proposal.
+ */
+function gatheringPlannerPreflightClarification(
+  request: string,
+  history: AgentProviderInput["history"],
+  family: AgentFamilyContext,
+  at: Date,
+): string | undefined {
+  const strippedRequest = stripNonInviteePlanningAdjuncts(request);
+  const strippedHistory = history.map((turn) => ({
+    ...turn,
+    message: turn.role === "user" ? stripNonInviteePlanningAdjuncts(turn.message) : turn.message,
+  }));
+  const invitees = resolveGatheringInvitees({
+    request: strippedRequest,
+    history: strippedHistory,
+    members: family.members,
+    effectiveRelationships: family.effectiveRelationships,
+    requesterMemberId: family.requester.linkedMemberId,
+    providerMemberIds: [],
+  });
+  if (invitees.clarification) return invitees.clarification;
+
+  const schedule = extractRequestedSchedule(invitees.referenceText, at);
+  if (schedule.invalidDate && schedule.invalidTime) {
+    return "Please provide a valid calendar date and Dubai time for this gathering.";
+  }
+  if (schedule.invalidDate) return "Please provide a valid calendar date for this gathering.";
+  if (schedule.invalidTime) return "Please provide a valid Dubai time to the minute for this gathering.";
+  if (schedule.ambiguousTime) return `Is ${schedule.ambiguousTime} AM or PM in Dubai time?`;
+  if (!schedule.hasDate && !schedule.hasTime) {
+    return "What date and Dubai time would you like for this gathering?";
+  }
+  if (!schedule.hasDate) return "What date would you like for this gathering?";
+  if (!schedule.hasTime) return "What Dubai time would you like for this gathering?";
+  if (!schedule.localDate || !schedule.localTime) {
+    return "Please confirm the exact date and Dubai time for this gathering.";
+  }
+  const plannedTime = new Date(`${schedule.localDate}T${schedule.localTime}:00+04:00`).getTime();
+  if (!Number.isFinite(plannedTime) || plannedTime <= at.getTime()) {
+    return "Please provide a future date and Dubai time for this gathering.";
+  }
+  if (
+    !physicalGatheringVenuePattern.test(invitees.referenceText)
+    && !remoteGatheringVenuePattern.test(invitees.referenceText)
+  ) {
+    return "Where would you like to hold this gathering?";
+  }
+  if (invitees.inviteesRequested && invitees.memberIds.length === 0) {
+    return "Which visible family members would you like to invite?";
+  }
+  return undefined;
+}
+
+function prepareGatheringPlanner(
+  planner: GatheringPlannerPayload,
+  request: string,
+  history: AgentProviderInput["history"],
+  family: AgentFamilyContext,
+  at: Date,
+): { planner?: GatheringPlannerPayload; clarification?: string } {
+  const resolution = resolveGatheringInvitees({
+    request,
+    history,
+    members: family.members,
+    effectiveRelationships: family.effectiveRelationships,
+    requesterMemberId: family.requester.linkedMemberId,
+    providerMemberIds: planner.memberIds,
+  });
+  if (resolution.invalidMemberIds?.length) {
+    throw new HttpError(
+      502,
+      "AGENT_INVALID_ACTION",
+      "The AI provider referenced a family member outside the permitted context. No family data was changed.",
+    );
+  }
+  if (resolution.clarification) return { clarification: resolution.clarification };
+  const groundedType = groundedGatheringType(planner.type, resolution.referenceText);
+  if (groundedType.correctionMismatch) {
+    return {
+      clarification: "I couldn't safely match the updated gathering type. Please confirm the type you want.",
+    };
+  }
+  const resolvedType = groundedType.type;
+
+  const schedule = extractRequestedSchedule(resolution.referenceText, at);
+  if (schedule.invalidDate && schedule.invalidTime) {
+    return { clarification: "Please provide a valid calendar date and Dubai time for this gathering." };
+  }
+  if (schedule.invalidDate) {
+    return { clarification: "Please provide a valid calendar date for this gathering." };
+  }
+  if (schedule.invalidTime) {
+    return { clarification: "Please provide a valid Dubai time to the minute for this gathering." };
+  }
+  if (schedule.ambiguousTime) {
+    return { clarification: `Is ${schedule.ambiguousTime} AM or PM in Dubai time?` };
+  }
+  if (!schedule.hasDate && !schedule.hasTime) {
+    return { clarification: "What date and Dubai time would you like for this gathering?" };
+  }
+  if (!schedule.hasDate) return { clarification: "What date would you like for this gathering?" };
+  if (!schedule.hasTime) return { clarification: "What Dubai time would you like for this gathering?" };
+  const requestedLocalDate = schedule.localDate!;
+  const requestedLocalTime = schedule.localTime!;
+
+  const plannedSchedule = plannerLocalSchedule(planner.startAt);
+  if (
+    requestedLocalDate !== plannedSchedule.localDate ||
+    requestedLocalTime !== plannedSchedule.localTime
+  ) {
+    return {
+      clarification:
+        "I couldn't safely match that schedule. Please confirm the exact date and Dubai time for this gathering.",
+    };
+  }
+  // User schedule evidence is minute-precision. Canonicalize provider seconds,
+  // fractional seconds, and offsets so unrequested sub-minute drift cannot
+  // reach the editable planner or persistence layer.
+  const canonicalStartAt = `${requestedLocalDate}T${requestedLocalTime}:00+04:00`;
+  if (new Date(canonicalStartAt).getTime() <= at.getTime()) {
+    throw new HttpError(
+      502,
+      "AGENT_INVALID_ACTION",
+      "The gathering schedule must be in the future. No gathering was created.",
+    );
+  }
+
+  const locationCorrection = latestLocationCorrection(resolution.referenceText);
+  if (
+    !physicalLocationIsGrounded(
+      planner.locationName,
+      resolvedType,
+      request,
+      history,
+      locationCorrection ?? resolution.referenceText,
+    )
+  ) {
+    return {
+      clarification: locationCorrection
+        ? "I couldn't safely match the updated venue. Please confirm the venue you want."
+        : "Where would you like to hold this gathering?",
+    };
+  }
+
+  const inviteesWereRequested = resolution.inviteesRequested === true;
+  if (inviteesWereRequested && resolution.memberIds.length === 0) {
+    return { clarification: "Which visible family members would you like to invite?" };
+  }
+
+  const { notes: proposedNotes, ...requiredPlanner } = planner;
+  if (unsafeGatheringLanguage.some((pattern) => pattern.test(`${planner.title} ${planner.purpose}`))) {
+    throw new HttpError(
+      502,
+      "AGENT_UNSAFE_GATHERING_LANGUAGE",
+      "The AI provider returned judgmental or sensitive family inferences. No gathering was created.",
+    );
+  }
+  const correctiveNote = latestCorrectivePlannerNote(resolution.referenceText);
+  const noteEvidence = correctiveNote ?? resolution.referenceText;
+  const userSuppliedPlannerNote = hasUserSuppliedPlannerNote(noteEvidence);
+  const acceptedNotes =
+    proposedNotes && userSuppliedPlannerNote && isGroundedPlannerNote(proposedNotes, noteEvidence)
+      ? proposedNotes
+      : undefined;
+  if (proposedNotes && !acceptedNotes && userSuppliedPlannerNote) {
+    if (unsafeGatheringLanguage.some((pattern) => pattern.test(proposedNotes))) {
+      throw new HttpError(
+        502,
+        "AGENT_UNSAFE_GATHERING_LANGUAGE",
+        "The AI provider returned judgmental or sensitive family inferences. No gathering was created.",
+      );
+    }
+    // A newer correction may intentionally remove or negate an older note.
+    // Omit stale provider text rather than allowing the older positive clause
+    // elsewhere in the transcript to ground it.
+    if (!correctiveNote) {
+      throw new HttpError(
+        502,
+        "AGENT_UNGROUNDED_GATHERING_NOTES",
+        "The AI provider returned notes that were not supplied by the user. No gathering was created.",
+      );
+    }
+  }
+  const remoteGathering =
+    (resolvedType === "Phone call" || resolvedType === "Video call") &&
+    userRequestedRemoteGathering(resolution.referenceText);
+  const resolvedLocationName = remoteGathering ? "Online" : planner.locationName;
+  const deterministicCopy = deterministicGatheringCopy(resolvedType, resolvedLocationName);
+  const deterministicPlanner = {
+    ...requiredPlanner,
+    ...deterministicCopy,
+    startAt: canonicalStartAt,
+    type: resolvedType,
+    locationName: resolvedLocationName,
+  };
+  const finalPlanner = gatheringPlannerPayloadSchema.safeParse({
+    ...deterministicPlanner,
+    ...(acceptedNotes ? { notes: acceptedNotes } : {}),
+    memberIds: resolution.memberIds,
+    invitationChannel: requestedInvitationChannel(resolution.referenceText),
+  });
+  if (!finalPlanner.success) {
+    throw new HttpError(
+      502,
+      "AGENT_INVALID_ACTION",
+      "The resolved gathering planner exceeds the supported limits. No gathering was created.",
+    );
+  }
+  return {
+    planner: finalPlanner.data,
+  };
 }
 
 function isFamilyAdmin(membership: Membership): boolean {
@@ -1861,11 +2963,11 @@ function prepareInvitationLinksPresentation(
   family: AgentFamilyContext,
 ) {
   const gathering = requireGatheringContext(family, payload.gatheringId);
-  if (!gathering.canPrepareInvitations) {
-    throw new HttpError(403, "INSUFFICIENT_ROLE", "Only the gathering creator or a family administrator may prepare links.");
-  }
   if (gathering.status === "completed" || gathering.status === "cancelled") {
     throw new HttpError(409, "GATHERING_CLOSED", "Invitations cannot be prepared for a closed gathering.");
+  }
+  if (!gathering.canPrepareInvitations) {
+    throw new HttpError(403, "INSUFFICIENT_ROLE", "Only the gathering creator or a family administrator may prepare links.");
   }
   const invitees = payload.memberIds.map((memberId) => requirePermittedMember(family, memberId));
   return {
@@ -1953,6 +3055,7 @@ function updatePlanStatusPresentation(payload: UpdatePlanStatusPayload, family: 
   if (!plan.canUpdate) {
     throw new HttpError(403, "PLAN_OWNER_REQUIRED", "Only the plan creator or a family administrator can update it.");
   }
+  assertReconnectionPlanStatusTransition(plan.status, payload.status);
   return {
     title: `Mark ${plan.title} ${payload.status}`,
     summary: `Change the plan status from ${plan.status} to ${payload.status}.`,
@@ -2318,6 +3421,122 @@ export function registerAgentRoutes(
   const backgroundTimers = (app.locals.backgroundTimers ??= []) as Array<ReturnType<typeof setInterval>>;
   backgroundTimers.push(cleanupTimer);
 
+  app.get("/api/agent/sessions/:sessionId/messages", (request: Request, response: Response) => {
+    const auth = requireAuth(response);
+    purgeExpiredAgentSessions(database, now());
+    const { sessionId } = parseParams(sessionParamsSchema, request.params);
+    const { familyId } = parseParams(sessionMessagesQuerySchema, request.query);
+    getMembership(database, familyId, auth.userId);
+    getOwnedSession(database, sessionId, familyId, auth.userId);
+    const rows = database
+      .prepare(
+        `SELECT id, role, kind, content_text, payload_json, created_at FROM (
+           SELECT id, role, kind, content_text, payload_json, message_order, created_at
+           FROM agent_messages
+           WHERE session_id = ?
+           ORDER BY message_order DESC
+           LIMIT 100
+         ) ORDER BY message_order`,
+      )
+      .all(sessionId) as Array<{
+      id: string;
+      role: "user" | "assistant";
+      kind: "message" | "clarification" | "proposal" | "result" | "gathering_planner";
+      content_text: string;
+      payload_json: string | null;
+      created_at: string;
+    }>;
+    const restoreReferenceTime = now();
+
+    response.json({
+      sessionId,
+      messages: rows.map((row) => {
+        if (row.kind === "proposal") {
+          try {
+            const metadata = storedProposalMessagePayloadSchema.safeParse(
+              row.payload_json === null ? undefined : JSON.parse(row.payload_json),
+            );
+            if (!metadata.success || row.role !== "assistant") throw new Error("Invalid proposal transcript metadata.");
+            const proposal = database
+              .prepare(
+                `SELECT * FROM agent_action_proposals
+                 WHERE id = ? AND session_id = ? AND family_id = ? AND created_by_user_id = ?`,
+              )
+              .get(metadata.data.proposalId, sessionId, familyId, auth.userId) as ActionProposalRow | undefined;
+            if (!proposal) throw new Error("Proposal no longer exists in this owned session.");
+            const warnings = z.array(z.string().max(2_000)).max(20).safeParse(JSON.parse(proposal.warnings_json));
+            if (!warnings.success) throw new Error("Invalid stored proposal warnings.");
+            const proposalStatus =
+              proposal.status === "pending" && proposalExpirationTime(proposal) <= restoreReferenceTime.getTime()
+                ? "expired" as const
+                : proposal.status;
+            return {
+              id: row.id,
+              role: row.role,
+              kind: row.kind,
+              message: row.content_text,
+              proposal: {
+                id: proposal.id,
+                actionType: proposal.action_type,
+                title: proposal.title,
+                summary: proposal.summary,
+                details: metadata.data.details,
+                warnings: warnings.data,
+              },
+              proposalStatus,
+              createdAt: row.created_at,
+            };
+          } catch {
+            // Legacy rows had no proposal id/presentation association. Never
+            // guess which mutable action they represented.
+            return {
+              id: row.id,
+              role: row.role,
+              kind: "message" as const,
+              message: `${row.content_text} The proposal controls could not be restored safely. Ask the AI Helper to prepare a new proposal.`,
+              createdAt: row.created_at,
+            };
+          }
+        }
+        if (row.kind !== "gathering_planner") {
+          return {
+            id: row.id,
+            role: row.role,
+            kind: row.kind,
+            message: row.content_text,
+            createdAt: row.created_at,
+          };
+        }
+        let planner: GatheringPlannerPayload | undefined;
+        try {
+          const parsed = gatheringPlannerPayloadSchema.safeParse(
+            row.payload_json === null ? undefined : JSON.parse(row.payload_json),
+          );
+          if (parsed.success) planner = parsed.data;
+        } catch {
+          // The row remains readable as a normal transcript message. A future
+          // incompatible/corrupt payload must not break the entire restore.
+        }
+        return planner
+          ? {
+              id: row.id,
+              role: row.role,
+              kind: row.kind,
+              message: row.content_text,
+              planner,
+              createdAt: row.created_at,
+            }
+          : {
+              id: row.id,
+              role: row.role,
+              kind: "message" as const,
+              message: `${row.content_text} The editable planner could not be restored.`,
+              createdAt: row.created_at,
+            };
+      }),
+    });
+  });
+
   app.delete("/api/agent/sessions/:sessionId", (request: Request, response: Response) => {
     const auth = requireAuth(response);
     const { sessionId } = parseParams(sessionParamsSchema, request.params);
@@ -2362,7 +3581,12 @@ export function registerAgentRoutes(
         );
       }
 
-      const timestamp = now().toISOString();
+      // Keep one reference instant for the context shown to the provider and
+      // deterministic relative-date validation after the provider returns.
+      // Otherwise a request crossing Dubai midnight can make "tomorrow"
+      // resolve to two different dates within the same turn.
+      const turnReferenceTime = now();
+      const timestamp = turnReferenceTime.toISOString();
       const newSession = !input.sessionId;
       const session: AgentSessionRow = input.sessionId
         ? getOwnedSession(database, input.sessionId, input.familyId, auth.userId)
@@ -2388,7 +3612,11 @@ export function registerAgentRoutes(
       };
 
       const history = newSession ? [] : readHistory(database, session.id);
-      const family = getPermittedFamilyContext(database, membership, auth.userId, now());
+      const family = getPermittedFamilyContext(database, membership, auth.userId, turnReferenceTime);
+      const providerInput = { request: input.message, history, family };
+      // Fail before the disclosure audit and provider call. Truncating the
+      // family graph would make names and relationships silently unreliable.
+      assertAgentProviderInputWithinLimits(providerInput);
 
       let rawDecision: unknown;
       try {
@@ -2413,7 +3641,7 @@ export function registerAgentRoutes(
             },
           });
         }
-        rawDecision = await generateWithTimeout(provider, { request: input.message, history, family }, timeoutMs);
+        rawDecision = await generateWithTimeout(provider, providerInput, timeoutMs);
       } catch (error) {
         sendAgentError(error);
       }
@@ -2427,6 +3655,89 @@ export function registerAgentRoutes(
         );
       }
       const decision: AgentProviderDecision = parsedDecision.data;
+
+      if (decision.kind !== "gathering_planner" && isNaturalGatheringPlannerIntent(input.message, history)) {
+        const clarification = gatheringPlannerPreflightClarification(
+          input.message,
+          history,
+          family,
+          turnReferenceTime,
+        );
+        if (clarification) {
+          let assistantMessageId = "";
+          database.transaction(() => {
+            persistTurnStart();
+            assistantMessageId = insertMessage(
+              database,
+              session.id,
+              "assistant",
+              "clarification",
+              clarification,
+              now().toISOString(),
+            );
+          })();
+          response.json({
+            sessionId: session.id,
+            messageId: assistantMessageId,
+            kind: "clarification",
+            message: clarification,
+          });
+          return;
+        }
+        throw new HttpError(
+          502,
+          "AGENT_INVALID_RESPONSE",
+          "The AI provider did not return the required gathering planner. No conversation or family data was changed.",
+        );
+      }
+
+      if (decision.kind === "gathering_planner") {
+        const prepared = prepareGatheringPlanner(decision.planner, input.message, history, family, turnReferenceTime);
+        if (prepared.clarification || !prepared.planner) {
+          const clarification = prepared.clarification ?? "Please confirm the gathering details before I prepare it.";
+          let assistantMessageId = "";
+          database.transaction(() => {
+            persistTurnStart();
+            assistantMessageId = insertMessage(
+              database,
+              session.id,
+              "assistant",
+              "clarification",
+              clarification,
+              now().toISOString(),
+            );
+          })();
+          response.json({
+            sessionId: session.id,
+            messageId: assistantMessageId,
+            kind: "clarification",
+            message: clarification,
+          });
+          return;
+        }
+
+        let assistantMessageId = "";
+        database.transaction(() => {
+          persistTurnStart();
+          assistantMessageId = insertMessage(
+            database,
+            session.id,
+            "assistant",
+            "gathering_planner",
+            GATHERING_PLANNER_MESSAGE,
+            now().toISOString(),
+            prepared.planner,
+          );
+        })();
+        response.json({
+          sessionId: session.id,
+          messageId: assistantMessageId,
+          kind: "gathering_planner",
+          message: GATHERING_PLANNER_MESSAGE,
+          planner: prepared.planner,
+        });
+        return;
+      }
 
       let preparedAddMember:
         | { payload: AddMemberPayload; required?: RequiredRequesterRelationship; clarification?: string }
@@ -2567,7 +3878,15 @@ export function registerAgentRoutes(
             createdAt.toISOString(),
             expiresAt.toISOString(),
           );
-        insertMessage(database, session.id, "assistant", "proposal", decision.message, createdAt.toISOString());
+        insertMessage(
+          database,
+          session.id,
+          "assistant",
+          "proposal",
+          decision.message,
+          createdAt.toISOString(),
+          { proposalId, details: presentation.details } satisfies z.infer<typeof storedProposalMessagePayloadSchema>,
+        );
       })();
 
       response.status(201).json({
@@ -2591,13 +3910,16 @@ export function registerAgentRoutes(
     asyncRoute(async (request: Request, response: Response) => {
       const auth = requireAuth(response);
       const { proposalId } = parseParams(proposalParamsSchema, request.params);
+      const { expectedActionType } = parseBody(proposalResolutionRequestSchema, request.body ?? {});
       const initialProposal = getOwnedProposal(database, proposalId, auth.userId);
+      assertExpectedProposalAction(initialProposal, expectedActionType);
       const membership = getMembership(database, initialProposal.family_id, auth.userId);
       requireActionPermission(membership, storedProposalAction(initialProposal));
 
       if (initialProposal.status === "confirmed") {
         response.json({
           proposalId,
+          actionType: initialProposal.action_type,
           status: "confirmed",
           message:
             initialProposal.action_type === "PREPARE_INVITATION_LINKS"
@@ -2611,12 +3933,13 @@ export function registerAgentRoutes(
       if (initialProposal.status === "rejected") {
         throw new HttpError(409, "PROPOSAL_REJECTED", "A cancelled proposal cannot be confirmed.");
       }
-      if (new Date(initialProposal.expires_at).getTime() <= now().getTime()) {
+      if (proposalExpirationTime(initialProposal) <= now().getTime()) {
         throw new HttpError(409, "PROPOSAL_EXPIRED", "This proposal expired. Ask the agent to prepare a new one.");
       }
 
       const result = database.transaction(() => {
         const proposal = getOwnedProposal(database, proposalId, auth.userId);
+        assertExpectedProposalAction(proposal, expectedActionType);
         const currentMembership = getMembership(database, proposal.family_id, auth.userId);
         requireActionPermission(currentMembership, storedProposalAction(proposal));
         if (proposal.status === "confirmed") {
@@ -2631,6 +3954,9 @@ export function registerAgentRoutes(
         }
         if (proposal.status !== "pending") {
           throw new HttpError(409, "PROPOSAL_NOT_PENDING", "This proposal can no longer be confirmed.");
+        }
+        if (proposalExpirationTime(proposal) <= now().getTime()) {
+          throw new HttpError(409, "PROPOSAL_EXPIRED", "This proposal expired. Ask the agent to prepare a new one.");
         }
 
         const claimed = database
@@ -2822,6 +4148,7 @@ export function registerAgentRoutes(
 
       response.json({
         proposalId,
+        actionType: initialProposal.action_type,
         status: "confirmed",
         message: result.message,
         result:
@@ -2838,7 +4165,9 @@ export function registerAgentRoutes(
     asyncRoute(async (request: Request, response: Response) => {
       const auth = requireAuth(response);
       const { proposalId } = parseParams(proposalParamsSchema, request.params);
+      const { expectedActionType } = parseBody(proposalResolutionRequestSchema, request.body ?? {});
       const initialProposal = getOwnedProposal(database, proposalId, auth.userId);
+      assertExpectedProposalAction(initialProposal, expectedActionType);
       getMembership(database, initialProposal.family_id, auth.userId);
 
       if (initialProposal.status === "confirmed") {
@@ -2847,6 +4176,7 @@ export function registerAgentRoutes(
       if (initialProposal.status === "rejected") {
         response.json({
           proposalId,
+          actionType: initialProposal.action_type,
           status: "rejected",
           message: "This proposal was already cancelled. No family data was changed.",
           alreadyRejected: true,
@@ -2855,6 +4185,8 @@ export function registerAgentRoutes(
       }
 
       database.transaction(() => {
+        const proposal = getOwnedProposal(database, proposalId, auth.userId);
+        assertExpectedProposalAction(proposal, expectedActionType);
         const rejectedAt = now().toISOString();
         const updated = database
           .prepare(
@@ -2867,16 +4199,16 @@ export function registerAgentRoutes(
           throw new HttpError(409, "PROPOSAL_NOT_PENDING", "This proposal can no longer be cancelled.");
         }
         writeAudit(database, {
-          familyId: initialProposal.family_id,
+          familyId: proposal.family_id,
           actorUserId: auth.userId,
           action: "agent.action.rejected",
           entityType: "agent_action_proposal",
           entityId: proposalId,
-          details: { actionType: initialProposal.action_type },
+          details: { actionType: proposal.action_type },
         });
         insertMessage(
           database,
-          initialProposal.session_id,
+          proposal.session_id,
           "assistant",
           "result",
           "The proposed change was cancelled. No family data was changed.",
@@ -2886,6 +4218,7 @@ export function registerAgentRoutes(
 
       response.json({
         proposalId,
+        actionType: initialProposal.action_type,
         status: "rejected",
         message: "The proposed change was cancelled. No family data was changed.",
         alreadyRejected: false,

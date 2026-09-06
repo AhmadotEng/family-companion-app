@@ -16,6 +16,11 @@ export interface CreateGatheringInput {
   type: string;
 }
 
+export interface CreateGatheringOptions {
+  /** Stable per planner instance so a retried request cannot make a duplicate. */
+  idempotencyKey?: string;
+}
+
 export interface PreparedInvitationResult {
   invitations: PreparedInvitation[];
   deliveryNotice: string;
@@ -28,10 +33,18 @@ export const engagementApi = {
       `/api/families/${encodeURIComponent(familyId)}/gatherings`,
     ),
 
-  createGathering: (familyId: string, input: CreateGatheringInput) =>
+  createGathering: (
+    familyId: string,
+    input: CreateGatheringInput,
+    options: CreateGatheringOptions = {},
+  ) =>
     apiRequest<{ gathering: PersistentGathering }>(
       `/api/families/${encodeURIComponent(familyId)}/gatherings`,
-      { method: 'POST', body: JSON.stringify(input) },
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+        headers: options.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : undefined,
+      },
     ),
 
   prepareInvitations: (

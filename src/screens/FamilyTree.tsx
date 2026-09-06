@@ -745,6 +745,7 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
                   fill="none"
                   stroke="#a8a29e"
                   strokeWidth="1.5"
+                  strokeDasharray={line.type === 'relative' ? '6 5' : undefined}
                   className="opacity-70"
                 />
               ))}

@@ -23,6 +23,10 @@ import {
   updatePlanStatusSchema,
   updateReconnectionPlanStatus,
 } from "./engagementCommands.js";
+import {
+  hashGatheringCreationPayload,
+  parseGatheringIdempotencyKey,
+} from "./gatheringIdempotency.js";
 
 /**
  * Schema owned by the engagement vertical slice. It is exported so the main
@@ -223,6 +227,11 @@ type GatheringRow = {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+type GatheringCreationRequestRow = {
+  payload_hash: string;
+  gathering_id: string;
 };
 
 type InvitationRow = {
@@ -452,10 +461,59 @@ export function registerEngagementRoutes(
     const auth = requireAuth(response);
     const { familyId } = parseParams(familyParams, request.params);
     const input = parseBody(createGatheringSchema, request.body);
-    const result = database.transaction(() =>
-      createGatheringDraft(database, familyId, input, { actorUserId: auth.userId }),
-    )();
-    response.status(201).json({ gathering: rowToGathering(database, getGathering(database, result.gatheringId), auth) });
+    const idempotencyKey = parseGatheringIdempotencyKey(request.get("Idempotency-Key"));
+
+    // Preserve the original endpoint behavior for callers which do not opt in
+    // to retry idempotency.
+    if (!idempotencyKey) {
+      const result = database.transaction(() =>
+        createGatheringDraft(database, familyId, input, { actorUserId: auth.userId }),
+      )();
+      response.status(201).json({ gathering: rowToGathering(database, getGathering(database, result.gatheringId), auth) });
+      return;
+    }
+
+    const payloadHash = hashGatheringCreationPayload(input);
+    const createIdempotently = database.transaction(() => {
+      // A replay must still pass today's family authorization checks.
+      getMembership(database, familyId, auth.userId);
+      const existing = database
+        .prepare(
+          `SELECT payload_hash, gathering_id
+           FROM gathering_creation_requests
+           WHERE family_id = ? AND actor_user_id = ? AND idempotency_key = ?`,
+        )
+        .get(familyId, auth.userId, idempotencyKey) as GatheringCreationRequestRow | undefined;
+
+      if (existing) {
+        if (existing.payload_hash !== payloadHash) {
+          throw new HttpError(
+            409,
+            "IDEMPOTENCY_KEY_REUSED",
+            "This Idempotency-Key was already used with different gathering details.",
+          );
+        }
+        return { gatheringId: existing.gathering_id, alreadyCreated: true };
+      }
+
+      const created = createGatheringDraft(database, familyId, input, { actorUserId: auth.userId });
+      database
+        .prepare(
+          `INSERT INTO gathering_creation_requests
+           (family_id, actor_user_id, idempotency_key, payload_hash, gathering_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(familyId, auth.userId, idempotencyKey, payloadHash, created.gatheringId, new Date().toISOString());
+      return { gatheringId: created.gatheringId, alreadyCreated: false };
+    });
+    // Acquire the SQLite write lock before the lookup so two server processes
+    // cannot both observe a missing key and create duplicate rows.
+    const result = createIdempotently.immediate();
+
+    response.status(result.alreadyCreated ? 200 : 201).json({
+      gathering: rowToGathering(database, getGathering(database, result.gatheringId), auth),
+      alreadyCreated: result.alreadyCreated,
+    });
   });
 
   app.post("/api/gatherings/:gatheringId/invitations", (request, response) => {

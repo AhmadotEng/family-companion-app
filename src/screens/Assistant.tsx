@@ -15,7 +15,14 @@ import { cn } from '../lib/utils';
 import { ApiError, apiRequest } from '../api/client';
 import { ReconnectionPlansPanel } from '../components/ReconnectionPlansPanel';
 import { PreparedInvitationLinks } from '../components/PreparedInvitationLinks';
+import {
+  GatheringPlanner,
+  type GatheringPlannerPrefill,
+  type GatheringPlannerStage,
+  type GatheringPlannerSubmissionResult,
+} from '../components/GatheringPlanner';
 import type { GatheringPlanPrefill } from '../api/reconnectionPlans';
+import type { PersistentGathering } from '../engagementTypes';
 import {
   agentWelcomeText,
   agentDataDisclosureText,
@@ -30,17 +37,27 @@ import {
   humanizeAgentLabel,
   invitationLinksUnavailableMessage,
   isDestructiveAgentAction,
+  isKnownAgentActionType,
+  type AgentActionType,
   type AgentResource,
 } from '../lib/agentPresentation';
 import {
   extractEphemeralInvitationLinks,
   type EphemeralInvitationLinks,
 } from '../lib/agentInvitationLinks';
+import { formatDubaiDateKey, formatDubaiDateTime } from '../lib/gatheringDate';
+import { GATHERING_TYPES } from '../lib/gatheringPlanner';
+import { useModalFocusTrap } from '../lib/modalFocus';
 import type { FamilyMember, FamilyRole } from '../types';
 
 export interface AgentActionCompletion {
   actionType: string;
   resources: AgentResource[];
+}
+
+export interface AgentResultNavigationTarget {
+  gatheringId?: string;
+  startAt?: string;
 }
 
 interface AssistantProps {
@@ -51,39 +68,245 @@ interface AssistantProps {
   familyRole?: FamilyRole;
   isActive?: boolean;
   onActionCompleted?: (completion: AgentActionCompletion) => Promise<void> | void;
-  onNavigateToActionResult?: (actionType: string) => void;
+  onNavigateToActionResult?: (actionType: string, target?: AgentResultNavigationTarget) => void;
   onUseReconnectionPlan: (prefill: GatheringPlanPrefill) => void;
 }
 
 interface ActionProposal {
   id: string;
-  actionType: string;
+  actionType: AgentActionType;
   title: string;
   summary: string;
   details?: Record<string, unknown>;
   warnings?: string[];
 }
 
+interface AgentGatheringPlannerPayload extends GatheringPlannerPrefill {
+  startAt: string;
+  timezone: 'Asia/Dubai';
+  invitationChannel: 'share_link' | 'whatsapp';
+}
+
 interface AgentMessage {
   id: string;
   role: 'user' | 'assistant';
   text: string;
+  kind?: 'message' | 'clarification' | 'proposal' | 'result' | 'gathering_planner';
   proposal?: ActionProposal;
-  proposalStatus?: 'pending' | 'confirmed' | 'rejected';
+  proposalStatus?: 'pending' | 'confirmed' | 'rejected' | 'expired';
   completedActionType?: string;
+  planner?: AgentGatheringPlannerPayload;
+  plannerStatus?: 'ready' | 'dismissed' | 'saved' | 'links_pending';
+  plannerResult?: StoredPlannerResult;
 }
 
 interface AgentResponse {
   sessionId: string;
-  kind: 'message' | 'clarification' | 'proposal';
+  messageId?: string;
+  kind: 'message' | 'clarification' | 'proposal' | 'gathering_planner';
   message: string;
   proposal?: ActionProposal;
+  planner?: AgentGatheringPlannerPayload;
+}
+
+interface RestoredAgentMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  kind: 'message' | 'clarification' | 'proposal' | 'result' | 'gathering_planner';
+  message: string;
+  proposal?: ActionProposal;
+  proposalStatus?: 'pending' | 'confirmed' | 'rejected' | 'expired';
+  planner?: AgentGatheringPlannerPayload;
+  createdAt: string;
+}
+
+interface AgentConversationResponse {
+  sessionId: string;
+  messages: RestoredAgentMessage[];
 }
 
 interface AgentProposalResolutionResponse {
+  proposalId: string;
+  actionType: AgentActionType;
+  status: 'confirmed' | 'rejected';
   message?: string;
   result?: unknown;
   alreadyCompleted?: boolean;
+  alreadyRejected?: boolean;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const canonicalDubaiMinutePattern = /^(\d{4}-\d{2}-\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:00\+04:00$/;
+const restoredMessageKinds = new Set(['message', 'clarification', 'proposal', 'result', 'gathering_planner']);
+
+function isBoundedText(value: unknown, minimum: number, maximum: number): value is string {
+  return typeof value === 'string' && value.trim() === value && value.length >= minimum && value.length <= maximum;
+}
+
+function isSafeActionProposal(value: unknown): value is ActionProposal {
+  if (!isRecord(value)) return false;
+  const allowedKeys = new Set(['id', 'actionType', 'title', 'summary', 'details', 'warnings']);
+  if (Object.keys(value).some(key => !allowedKeys.has(key))) return false;
+  if (
+    typeof value.id !== 'string'
+    || !uuidPattern.test(value.id)
+    || !isKnownAgentActionType(value.actionType)
+    || !isBoundedText(value.title, 1, 500)
+    || !isBoundedText(value.summary, 1, 2_000)
+  ) return false;
+  if (value.details !== undefined && !isRecord(value.details)) return false;
+  return value.warnings === undefined
+    || (
+      Array.isArray(value.warnings)
+      && value.warnings.length <= 100
+      && value.warnings.every(warning => isBoundedText(warning, 1, 2_000))
+    );
+}
+
+function isProposalStatus(value: unknown): value is NonNullable<AgentMessage['proposalStatus']> {
+  return value === 'pending' || value === 'confirmed' || value === 'rejected' || value === 'expired';
+}
+
+function isSafeGatheringPlannerPayload(value: unknown): value is AgentGatheringPlannerPayload {
+  if (!isRecord(value)) return false;
+  const allowedKeys = new Set([
+    'title',
+    'purpose',
+    'startAt',
+    'timezone',
+    'locationName',
+    'type',
+    'notes',
+    'memberIds',
+    'invitationChannel',
+  ]);
+  if (Object.keys(value).some(key => !allowedKeys.has(key))) return false;
+  const scheduleMatch = typeof value.startAt === 'string'
+    ? canonicalDubaiMinutePattern.exec(value.startAt)
+    : null;
+  const parsedStartAt = scheduleMatch ? new Date(value.startAt as string) : undefined;
+  if (
+    !isBoundedText(value.title, 2, 120)
+    || !isBoundedText(value.purpose, 2, 500)
+    || !scheduleMatch
+    || !parsedStartAt
+    || Number.isNaN(parsedStartAt.getTime())
+    || formatDubaiDateKey(parsedStartAt) !== scheduleMatch[1]
+    || value.timezone !== 'Asia/Dubai'
+    || !isBoundedText(value.locationName, 2, 300)
+    || typeof value.type !== 'string'
+    || !(GATHERING_TYPES as readonly string[]).includes(value.type)
+    || !Array.isArray(value.memberIds)
+    || value.memberIds.length > 200
+    || value.memberIds.some(memberId => typeof memberId !== 'string' || !uuidPattern.test(memberId))
+    || new Set(value.memberIds).size !== value.memberIds.length
+    || (value.invitationChannel !== 'share_link' && value.invitationChannel !== 'whatsapp')
+  ) return false;
+  return value.notes === undefined || isBoundedText(value.notes, 1, 2_000);
+}
+
+function isSafeRestoredAgentMessage(value: unknown): value is RestoredAgentMessage {
+  if (!isRecord(value)) return false;
+  const allowedKeys = new Set([
+    'id', 'role', 'kind', 'message', 'proposal', 'proposalStatus', 'planner', 'createdAt',
+  ]);
+  if (Object.keys(value).some(key => !allowedKeys.has(key))) return false;
+  if (
+    !isBoundedText(value.id, 1, 200)
+    || (value.role !== 'user' && value.role !== 'assistant')
+    || typeof value.kind !== 'string'
+    || !restoredMessageKinds.has(value.kind)
+    || !isBoundedText(value.message, 1, 2_000)
+    || typeof value.createdAt !== 'string'
+    || Number.isNaN(new Date(value.createdAt).getTime())
+  ) return false;
+  if (value.kind === 'proposal') {
+    return uuidPattern.test(value.id)
+      && value.role === 'assistant'
+      && isSafeActionProposal(value.proposal)
+      && isProposalStatus(value.proposalStatus)
+      && value.planner === undefined;
+  }
+  if (value.kind === 'gathering_planner') {
+    return uuidPattern.test(value.id)
+      && value.role === 'assistant'
+      && isSafeGatheringPlannerPayload(value.planner)
+      && value.proposal === undefined
+      && value.proposalStatus === undefined;
+  }
+  return value.proposal === undefined && value.planner === undefined && value.proposalStatus === undefined;
+}
+
+function sanitizeRestoredAgentMessage(value: unknown): RestoredAgentMessage | undefined {
+  if (isSafeRestoredAgentMessage(value)) return value;
+  if (!isRecord(value)) return undefined;
+  if (
+    !isBoundedText(value.id, 1, 200)
+    || (value.role !== 'user' && value.role !== 'assistant')
+    || !isBoundedText(value.message, 1, 2_000)
+    || typeof value.createdAt !== 'string'
+    || Number.isNaN(new Date(value.createdAt).getTime())
+  ) return undefined;
+  // Preserve readable transcript text, but strip every action/planner control
+  // from a malformed restored envelope.
+  return {
+    id: value.id,
+    role: value.role,
+    kind: 'message',
+    message: value.message,
+    createdAt: value.createdAt,
+  };
+}
+
+function isSafeLiveAgentResponse(value: unknown): value is AgentResponse {
+  if (!isRecord(value)) return false;
+  const allowedKeys = new Set(['sessionId', 'messageId', 'kind', 'message', 'proposal', 'planner']);
+  if (Object.keys(value).some(key => !allowedKeys.has(key))) return false;
+  if (
+    typeof value.sessionId !== 'string'
+    || !uuidPattern.test(value.sessionId)
+    || (value.kind !== 'message'
+      && value.kind !== 'clarification'
+      && value.kind !== 'proposal'
+      && value.kind !== 'gathering_planner')
+    || !isBoundedText(value.message, 1, 2_000)
+    || (value.messageId !== undefined && (typeof value.messageId !== 'string' || !uuidPattern.test(value.messageId)))
+  ) return false;
+  if (value.kind === 'proposal') {
+    return isSafeActionProposal(value.proposal) && value.planner === undefined;
+  }
+  if (value.kind === 'gathering_planner') {
+    return typeof value.messageId === 'string'
+      && uuidPattern.test(value.messageId)
+      && isSafeGatheringPlannerPayload(value.planner)
+      && value.proposal === undefined;
+  }
+  return value.proposal === undefined && value.planner === undefined;
+}
+
+function isSafeProposalResolutionResponse(value: unknown): value is AgentProposalResolutionResponse {
+  if (!isRecord(value)) return false;
+  const allowedKeys = new Set([
+    'proposalId',
+    'actionType',
+    'status',
+    'message',
+    'result',
+    'alreadyCompleted',
+    'alreadyRejected',
+  ]);
+  if (Object.keys(value).some(key => !allowedKeys.has(key))) return false;
+  return typeof value.proposalId === 'string'
+    && uuidPattern.test(value.proposalId)
+    && isKnownAgentActionType(value.actionType)
+    && (value.status === 'confirmed' || value.status === 'rejected')
+    && (value.message === undefined || isBoundedText(value.message, 1, 2_000))
+    && (value.alreadyCompleted === undefined || typeof value.alreadyCompleted === 'boolean')
+    && (value.alreadyRejected === undefined || typeof value.alreadyRejected === 'boolean');
 }
 
 interface AgentErrorNotice {
@@ -134,6 +357,90 @@ const welcomeMessage: AgentMessage = {
   text: agentWelcomeText,
 };
 
+const agentSessionKey = (familyId: string) => `family-companion:agent-session:${familyId}`;
+const plannerStateKey = (familyId: string) => `family-companion:agent-planners:${familyId}`;
+
+interface StoredPlannerState {
+  dismissed: string[];
+  saved: string[];
+  results: Record<string, StoredPlannerResult>;
+}
+
+interface StoredPlannerResult {
+  gatheringId: string;
+  startAt: string;
+  linksPending: boolean;
+}
+
+function readStoredPlannerState(familyId: string): StoredPlannerState {
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(plannerStateKey(familyId)) || '{}') as Partial<StoredPlannerState>;
+    const results = Object.fromEntries(
+      Object.entries(parsed.results && typeof parsed.results === 'object' ? parsed.results : {})
+        .slice(-100)
+        .filter((entry): entry is [string, StoredPlannerResult] => {
+          const [messageId, value] = entry;
+          return Boolean(
+            messageId
+            && value
+            && typeof value === 'object'
+            && typeof value.gatheringId === 'string'
+            && typeof value.startAt === 'string'
+            && !Number.isNaN(new Date(value.startAt).getTime())
+            && typeof value.linksPending === 'boolean',
+          );
+        }),
+    );
+    return {
+      dismissed: Array.isArray(parsed.dismissed) ? parsed.dismissed.filter(value => typeof value === 'string') : [],
+      saved: Array.isArray(parsed.saved) ? parsed.saved.filter(value => typeof value === 'string') : [],
+      results,
+    };
+  } catch {
+    return { dismissed: [], saved: [], results: {} };
+  }
+}
+
+function writeStoredPlannerState(familyId: string, state: StoredPlannerState): void {
+  try {
+    window.sessionStorage.setItem(plannerStateKey(familyId), JSON.stringify(state));
+  } catch {
+    // Private browsing/storage policies may disable sessionStorage. The
+    // server-owned conversation remains the source of truth.
+  }
+}
+
+function rememberSession(familyId: string, nextSessionId: string): void {
+  try {
+    window.sessionStorage.setItem(agentSessionKey(familyId), nextSessionId);
+  } catch {
+    // The live in-memory session still works when browser storage is blocked.
+  }
+}
+
+function forgetSession(familyId: string): void {
+  try {
+    window.sessionStorage.removeItem(agentSessionKey(familyId));
+    window.sessionStorage.removeItem(plannerStateKey(familyId));
+  } catch {
+    // Nothing else is required; the server still enforces session ownership.
+  }
+}
+
+export function clearStoredAgentSessions(): void {
+  try {
+    for (let index = window.sessionStorage.length - 1; index >= 0; index -= 1) {
+      const key = window.sessionStorage.key(index);
+      if (key?.startsWith('family-companion:agent-session:') || key?.startsWith('family-companion:agent-planners:')) {
+        window.sessionStorage.removeItem(key);
+      }
+    }
+  } catch {
+    // Server authorization still prevents another signed-in user from loading
+    // a conversation even if browser storage cannot be cleared.
+  }
+}
+
 export function Assistant({
   presetInput,
   clearPreset,
@@ -149,19 +456,51 @@ export function Assistant({
   const [input, setInput] = useState('');
   const [sessionId, setSessionId] = useState<string>();
   const [isLoading, setIsLoading] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
   const [activeProposalId, setActiveProposalId] = useState<string>();
+  const [activePlannerMessageId, setActivePlannerMessageId] = useState<string>();
+  const [activePlannerStage, setActivePlannerStage] = useState<GatheringPlannerStage>('details');
+  const [plannerBusy, setPlannerBusy] = useState(false);
   const [uncertainProposalIds, setUncertainProposalIds] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState<AgentErrorNotice>();
   const [planRefreshVersion, setPlanRefreshVersion] = useState(0);
   const [aiProcessingConsent, setAiProcessingConsent] = useState(false);
   const [ephemeralInvitationLinks, setEphemeralInvitationLinks] = useState<EphemeralInvitationLinks>();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const activeFamilyIdRef = useRef(familyId);
+  const activeSessionIdRef = useRef(sessionId);
+  const activePlannerMessageIdRef = useRef(activePlannerMessageId);
+  const isActiveRef = useRef(isActive);
+  const mountedRef = useRef(false);
+  activeFamilyIdRef.current = familyId;
+  activeSessionIdRef.current = sessionId;
+  activePlannerMessageIdRef.current = activePlannerMessageId;
+  isActiveRef.current = isActive;
   const quickPrompts = getAgentQuickPrompts(familyRole);
   const roleNotice = getAgentRoleNotice(familyRole);
+  const isCurrentConversationContext = (expectedFamilyId: string, expectedSessionId: string) => (
+    mountedRef.current
+    && activeFamilyIdRef.current === expectedFamilyId
+    && activeSessionIdRef.current === expectedSessionId
+  );
+  const isCurrentOpenPlannerContext = (
+    expectedFamilyId: string,
+    expectedSessionId: string,
+    expectedMessageId: string,
+  ) => isActiveRef.current
+    && isCurrentConversationContext(expectedFamilyId, expectedSessionId)
+    && activePlannerMessageIdRef.current === expectedMessageId;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading]);
+  }, [messages, isLoading, isRestoring]);
 
   useEffect(() => {
     if (!presetInput) return;
@@ -170,16 +509,129 @@ export function Assistant({
   }, [clearPreset, presetInput]);
 
   useEffect(() => {
+    // Assistant transcripts, proposals, and planners are family-scoped. Reset
+    // the in-memory view before optionally restoring the newly selected
+    // family's owned server session.
+    setMessages([welcomeMessage]);
+    setSessionId(undefined);
+    setIsLoading(false);
+    setIsRestoring(false);
+    setActiveProposalId(undefined);
+    setActivePlannerMessageId(undefined);
+    setActivePlannerStage('details');
+    setPlannerBusy(false);
+    setUncertainProposalIds(new Set());
+    setError(undefined);
+    setAiProcessingConsent(false);
     setEphemeralInvitationLinks(undefined);
   }, [familyId]);
 
   useEffect(() => {
-    if (!isActive) setEphemeralInvitationLinks(undefined);
+    if (!familyId) return;
+    let storedSessionId = '';
+    try {
+      storedSessionId = window.sessionStorage.getItem(agentSessionKey(familyId)) || '';
+    } catch {
+      return;
+    }
+    if (!storedSessionId) return;
+    if (!uuidPattern.test(storedSessionId)) {
+      forgetSession(familyId);
+      return;
+    }
+
+    let current = true;
+    setIsRestoring(true);
+    apiRequest<unknown>(
+      `/api/agent/sessions/${encodeURIComponent(storedSessionId)}/messages?familyId=${encodeURIComponent(familyId)}`,
+    ).then((rawConversation) => {
+      if (!current) return;
+      if (
+        !isRecord(rawConversation)
+        || rawConversation.sessionId !== storedSessionId
+        || !Array.isArray(rawConversation.messages)
+      ) throw new Error('The saved AI conversation returned an invalid response.');
+      const conversation: AgentConversationResponse = {
+        sessionId: storedSessionId,
+        messages: rawConversation.messages
+          .map(sanitizeRestoredAgentMessage)
+          .filter((message): message is RestoredAgentMessage => Boolean(message)),
+      };
+      const localPlannerState = readStoredPlannerState(familyId);
+      const dismissed = new Set(localPlannerState.dismissed);
+      const saved = new Set(localPlannerState.saved);
+      const restoredMessages: AgentMessage[] = conversation.messages.map((message) => {
+        const plannerResult = localPlannerState.results[message.id];
+        const restoredProposal = message.kind === 'proposal' ? message.proposal : undefined;
+        return {
+          id: message.id,
+          role: message.role,
+          kind: message.kind === 'proposal' && !restoredProposal ? 'message' : message.kind,
+          text: message.message,
+          ...(restoredProposal ? {
+            proposal: restoredProposal,
+            proposalStatus: message.proposalStatus,
+          } : {}),
+          ...(message.planner ? {
+            planner: message.planner,
+            plannerStatus: plannerResult?.linksPending
+              ? 'links_pending' as const
+              : saved.has(message.id)
+                ? 'saved' as const
+                : dismissed.has(message.id)
+                  ? 'dismissed' as const
+                  : 'ready' as const,
+            ...(plannerResult ? { plannerResult } : {}),
+          } : {}),
+        };
+      });
+      setSessionId(conversation.sessionId);
+      setMessages([welcomeMessage, ...restoredMessages]);
+      const plannerToOpen = [...restoredMessages]
+        .reverse()
+        .find(message => message.planner && message.plannerStatus === 'ready');
+      setActivePlannerMessageId(isActiveRef.current ? plannerToOpen?.id : undefined);
+      setActivePlannerStage('details');
+    }).catch((caught) => {
+      if (!current) return;
+      if (caught instanceof ApiError && caught.status === 404) {
+        forgetSession(familyId);
+        setSessionId(undefined);
+        setMessages([welcomeMessage]);
+        return;
+      }
+      setError({
+        phase: 'conversation',
+        outcome: 'unchanged',
+        title: 'Conversation could not be restored',
+        message: requestErrorMessage(caught, 'The saved AI conversation is currently unavailable.'),
+        consequence: 'No family data was changed. You can still start a new conversation after deleting the unavailable one.',
+      });
+    }).finally(() => {
+      if (current) setIsRestoring(false);
+    });
+
+    return () => {
+      current = false;
+    };
+  }, [familyId]);
+
+  useEffect(() => {
+    if (!isActive) {
+      // Private invitation URLs can also live inside GatheringPlanner state.
+      // Unmount the child when the Assistant is hidden so returning to this
+      // tab cannot reveal a previous one-time result.
+      setEphemeralInvitationLinks(undefined);
+      setActivePlannerMessageId(undefined);
+      setActivePlannerStage('details');
+      setPlannerBusy(false);
+    }
   }, [isActive]);
 
   const sendMessage = async (overrideInput?: string) => {
     const messageText = (overrideInput ?? input).trim();
-    if (!messageText || isLoading || !familyId) return;
+    if (!messageText || isLoading || isRestoring || !familyId) return;
+    const requestFamilyId = familyId;
     if (!aiProcessingConsent) {
       setError({
         phase: 'request',
@@ -203,26 +655,40 @@ export function Assistant({
     setIsLoading(true);
 
     try {
-      const body = await apiRequest<AgentResponse>('/api/agent/messages', {
+      const rawBody = await apiRequest<unknown>('/api/agent/messages', {
         method: 'POST',
-        body: JSON.stringify({ familyId, sessionId, message: messageText, aiProcessingConsent: true }),
+        body: JSON.stringify({ familyId: requestFamilyId, sessionId, message: messageText, aiProcessingConsent: true }),
       });
-      if (!body.sessionId || !body.kind || !body.message) {
+      // Ignore a late response after the user has switched families. The
+      // response remains stored only in its server-authorized family session.
+      if (activeFamilyIdRef.current !== requestFamilyId) return;
+      if (!isSafeLiveAgentResponse(rawBody)) {
         throw new Error('The family agent returned an invalid response.');
       }
+      const body = rawBody;
 
       setSessionId(body.sessionId);
+      rememberSession(requestFamilyId, body.sessionId);
+      const assistantMessageId = body.messageId || `assistant-${Date.now()}`;
       setMessages((current) => [
         ...current,
         {
-          id: `assistant-${Date.now()}`,
+          id: assistantMessageId,
           role: 'assistant',
+          kind: body.kind,
           text: body.message,
           proposal: body.proposal,
           proposalStatus: body.proposal ? 'pending' : undefined,
+          planner: body.kind === 'gathering_planner' ? body.planner : undefined,
+          plannerStatus: body.kind === 'gathering_planner' ? 'ready' : undefined,
         },
       ]);
+      if (body.kind === 'gathering_planner') {
+        setActivePlannerStage('details');
+        setActivePlannerMessageId(isActiveRef.current ? body.messageId! : undefined);
+      }
     } catch (requestError) {
+      if (activeFamilyIdRef.current !== requestFamilyId) return;
       setError({
         phase: 'request',
         outcome: 'unchanged',
@@ -231,8 +697,10 @@ export function Assistant({
         consequence: 'No family data was changed by this request.',
       });
     } finally {
-      setIsLoading(false);
-      setAiProcessingConsent(false);
+      if (activeFamilyIdRef.current === requestFamilyId) {
+        setIsLoading(false);
+        setAiProcessingConsent(false);
+      }
     }
   };
 
@@ -242,6 +710,21 @@ export function Assistant({
     options: { statusCheck?: boolean } = {},
   ) => {
     const proposalId = proposal.id;
+    const requestFamilyId = familyId;
+    const requestSessionId = sessionId;
+    if (!requestFamilyId || !requestSessionId || !isKnownAgentActionType(proposal.actionType)) {
+      setError({
+        phase: 'confirmation',
+        outcome: 'unchanged',
+        title: 'Proposal cannot be verified',
+        message: 'This proposal is not bound to the active family conversation.',
+        consequence: 'No family data was changed.',
+      });
+      return;
+    }
+    const isCurrentRequest = () => mountedRef.current
+      && activeFamilyIdRef.current === requestFamilyId
+      && activeSessionIdRef.current === requestSessionId;
     if (decision === 'confirm' && !canRoleConfirmAgentAction(proposal.actionType, familyRole)) {
       setError({
         phase: 'confirmation',
@@ -271,9 +754,23 @@ export function Assistant({
     setError(undefined);
 
     try {
-      const body = await apiRequest<AgentProposalResolutionResponse>(`/api/agent/action-proposals/${encodeURIComponent(proposalId)}/${decision}`, {
+      const rawBody = await apiRequest<unknown>(`/api/agent/action-proposals/${encodeURIComponent(proposalId)}/${decision}`, {
         method: 'POST',
+        body: JSON.stringify({ expectedActionType: proposal.actionType }),
       });
+      if (!isCurrentRequest()) return;
+      if (!isSafeProposalResolutionResponse(rawBody)) {
+        throw new Error('The proposal result returned an invalid response.');
+      }
+      const body = rawBody;
+      const expectedStatus = decision === 'confirm' ? 'confirmed' : 'rejected';
+      if (
+        body.proposalId !== proposalId
+        || body.actionType !== proposal.actionType
+        || body.status !== expectedStatus
+      ) {
+        throw new Error('The proposal result did not match the action shown for approval.');
+      }
 
       setMessages((current) => current.map((message) => (
         message.proposal?.id === proposalId
@@ -311,6 +808,7 @@ export function Assistant({
         try {
           await onActionCompleted?.({ actionType: proposal.actionType, resources });
         } catch {
+          if (!isCurrentRequest()) return;
           setError({
             phase: 'refresh',
             outcome: 'completed',
@@ -321,29 +819,151 @@ export function Assistant({
         }
       }
     } catch (requestError) {
+      if (!isCurrentRequest()) return;
       const notice = proposalResolutionError(requestError, decision);
       setError(notice);
       if (decision === 'confirm' && notice.outcome === 'unknown') {
         setUncertainProposalIds((current) => new Set(current).add(proposalId));
       }
     } finally {
-      setActiveProposalId(undefined);
+      if (isCurrentRequest()) setActiveProposalId(undefined);
     }
+  };
+
+  const setPlannerStatus = (
+    messageId: string,
+    status: 'dismissed' | 'saved' | 'links_pending',
+    result?: StoredPlannerResult,
+  ) => {
+    setMessages(current => current.map(message => (
+      message.id === messageId
+        ? { ...message, plannerStatus: status, ...(result ? { plannerResult: result } : {}) }
+        : message
+    )));
+    if (!familyId) return;
+    const stored = readStoredPlannerState(familyId);
+    const dismissed = new Set(stored.dismissed);
+    const saved = new Set(stored.saved);
+    const results = { ...stored.results };
+    if (status === 'saved' || status === 'links_pending') {
+      saved.add(messageId);
+      dismissed.delete(messageId);
+      if (result) results[messageId] = result;
+    } else if (!saved.has(messageId)) {
+      dismissed.add(messageId);
+      delete results[messageId];
+    }
+    writeStoredPlannerState(familyId, {
+      dismissed: [...dismissed].slice(-100),
+      saved: [...saved].slice(-100),
+      results: Object.fromEntries(Object.entries(results).slice(-100)),
+    });
+  };
+
+  const closeActivePlanner = () => {
+    if (!activePlannerMessageId || plannerBusy) return;
+    const plannerMessage = messages.find(message => message.id === activePlannerMessageId);
+    if (plannerMessage?.plannerStatus !== 'saved' && plannerMessage?.plannerStatus !== 'links_pending') {
+      setPlannerStatus(activePlannerMessageId, 'dismissed');
+    }
+    setActivePlannerMessageId(undefined);
+    setActivePlannerStage('details');
+  };
+
+  const openPlanner = (messageId: string) => {
+    const plannerMessage = messages.find(message => message.id === messageId);
+    if (
+      !plannerMessage?.planner
+      || plannerMessage.plannerStatus === 'saved'
+      || plannerMessage.plannerStatus === 'links_pending'
+    ) return;
+    setMessages(current => current.map(message => (
+      message.id === messageId ? { ...message, plannerStatus: 'ready' } : message
+    )));
+    if (familyId) {
+      const stored = readStoredPlannerState(familyId);
+      writeStoredPlannerState(familyId, {
+        ...stored,
+        dismissed: stored.dismissed.filter(id => id !== messageId),
+      });
+    }
+    setActivePlannerStage('details');
+    setActivePlannerMessageId(messageId);
+  };
+
+  const handlePlannerGatheringChanged = async (requestFamilyId: string, requestSessionId: string) => {
+    try {
+      await onActionCompleted?.({ actionType: 'CREATE_GATHERING_DRAFT', resources: ['gatherings'] });
+    } catch {
+      if (!isCurrentConversationContext(requestFamilyId, requestSessionId)) return;
+      setError({
+        phase: 'refresh',
+        outcome: 'completed',
+        title: 'Gathering saved; refresh failed',
+        message: 'The Calendar could not refresh automatically. Open it and use Refresh.',
+        consequence: 'The gathering was created exactly once. Only the follow-up screen refresh failed.',
+      });
+    }
+  };
+
+  const handlePlannerSubmissionResult = (messageId: string, result: GatheringPlannerSubmissionResult) => {
+    setPlannerStatus(
+      messageId,
+      result.invitationError ? 'links_pending' : 'saved',
+      {
+        gatheringId: result.gathering.id,
+        startAt: result.gathering.startAt,
+        linksPending: Boolean(result.invitationError),
+      },
+    );
+  };
+
+  const handlePlannerStageChange = (stage: GatheringPlannerStage) => {
+    setActivePlannerStage(stage);
+  };
+
+  const viewPlannerResultInCalendar = (gathering: PersistentGathering) => {
+    setActivePlannerMessageId(undefined);
+    setActivePlannerStage('details');
+    onNavigateToActionResult?.('CREATE_GATHERING_DRAFT', {
+      gatheringId: gathering.id,
+      startAt: gathering.startAt,
+    });
+  };
+
+  const viewPlannerMessageInCalendar = (message: AgentMessage) => {
+    onNavigateToActionResult?.('CREATE_GATHERING_DRAFT', {
+      ...(message.plannerResult?.gatheringId ? { gatheringId: message.plannerResult.gatheringId } : {}),
+      startAt: message.plannerResult?.startAt ?? message.planner?.startAt,
+    });
   };
 
   const deleteConversation = async () => {
     if (!sessionId || !window.confirm('Permanently delete this AI conversation and its pending proposals?')) return;
+    const requestFamilyId = familyId;
+    const requestSessionId = sessionId;
+    if (!requestFamilyId) return;
+    const isCurrentRequest = () => mountedRef.current
+      && activeFamilyIdRef.current === requestFamilyId
+      && activeSessionIdRef.current === requestSessionId;
     setIsLoading(true);
     setError(undefined);
     try {
-      await apiRequest<void>(`/api/agent/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+      await apiRequest<void>(`/api/agent/sessions/${encodeURIComponent(requestSessionId)}`, { method: 'DELETE' });
+      if (!isCurrentRequest()) return;
+      setIsLoading(false);
       setSessionId(undefined);
       setMessages([welcomeMessage]);
       setUncertainProposalIds(new Set());
+      setActivePlannerMessageId(undefined);
+      setActivePlannerStage('details');
+      setPlannerBusy(false);
       setInput('');
       setAiProcessingConsent(false);
       setEphemeralInvitationLinks(undefined);
+      forgetSession(requestFamilyId);
     } catch (requestError) {
+      if (!isCurrentRequest()) return;
       setError({
         phase: 'conversation',
         outcome: 'unknown',
@@ -352,12 +972,21 @@ export function Assistant({
         consequence: 'Family records were not changed. The conversation may already have been deleted if the connection failed after the server acted.',
       });
     } finally {
-      setIsLoading(false);
+      if (isCurrentRequest()) setIsLoading(false);
     }
   };
 
+  const activePlannerMessage = activePlannerMessageId
+    ? messages.find(message => message.id === activePlannerMessageId && message.planner)
+    : undefined;
+  const plannerDialogRef = useModalFocusTrap<HTMLDivElement>({
+    active: Boolean(activePlannerMessage?.planner && familyId),
+    onEscape: closeActivePlanner,
+    escapeDisabled: plannerBusy,
+  });
+
   return (
-    <div className="flex min-h-[32rem] flex-col lg:h-[calc(100vh-12rem)]">
+    <div className="flex min-h-[43rem] flex-col lg:h-[calc(100vh-12rem)]">
       <div className="mb-4 rounded-2xl border border-gold/20 bg-gold/10 p-4 text-ink">
         <div className="flex items-start gap-3">
           <ShieldCheck className="mt-0.5 shrink-0 text-gold" size={18} />
@@ -371,7 +1000,7 @@ export function Assistant({
             <button
               type="button"
               onClick={() => void deleteConversation()}
-              disabled={isLoading}
+              disabled={isLoading || isRestoring}
               className="shrink-0 rounded-xl border border-gold/30 px-3 py-2 text-[9px] font-bold uppercase tracking-wider text-ink/55 hover:border-red-300 hover:text-red-700 disabled:opacity-40"
             >
               Delete conversation
@@ -425,7 +1054,7 @@ export function Assistant({
         </div>
       )}
 
-      <div className="mb-4 flex-1 space-y-5 overflow-y-auto pr-2 custom-scrollbar" aria-live="polite">
+      <div className="mb-4 min-h-40 flex-1 space-y-5 overflow-y-auto pr-2 custom-scrollbar" aria-live="polite">
         {messages.map((message) => (
           <motion.div
             initial={{ opacity: 0, y: 8 }}
@@ -529,11 +1158,81 @@ export function Assistant({
                   ) : (
                     <div className={cn(
                       'mt-4 flex items-center gap-2 rounded-xl px-4 py-3 text-[10px] font-bold uppercase tracking-wider',
-                      message.proposalStatus === 'confirmed' ? 'bg-green-50 text-green-700' : 'bg-sand text-ink/50',
+                      message.proposalStatus === 'confirmed'
+                        ? 'bg-green-50 text-green-700'
+                        : message.proposalStatus === 'expired'
+                          ? 'bg-amber-50 text-amber-800'
+                          : 'bg-sand text-ink/50',
                     )}>
                       {message.proposalStatus === 'confirmed' ? <Check size={14} /> : <X size={14} />}
-                      {message.proposalStatus === 'confirmed' ? 'Confirmed and completed' : 'Cancelled — no changes made'}
+                      {message.proposalStatus === 'confirmed'
+                        ? 'Confirmed and completed'
+                        : message.proposalStatus === 'expired'
+                          ? 'Expired — ask for a new proposal'
+                          : 'Cancelled — no changes made'}
                     </div>
+                  )}
+                </div>
+              )}
+
+              {message.planner && (
+                <div className="rounded-3xl border border-blue-200 bg-white p-5 shadow-md" data-agent-gathering-planner={message.plannerStatus ?? 'ready'}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-blue-700">Editable gathering plan</p>
+                      <h3 className="mt-1 font-serif text-lg font-bold italic text-ink">{message.planner.title}</h3>
+                    </div>
+                    <span className={cn(
+                      'rounded-full px-3 py-1 text-[8px] font-bold uppercase tracking-wider',
+                      message.plannerStatus === 'saved'
+                        ? 'bg-green-50 text-green-700'
+                        : message.plannerStatus === 'links_pending'
+                          ? 'bg-amber-50 text-amber-800'
+                          : 'bg-blue-50 text-blue-700',
+                    )}>
+                      {message.plannerStatus === 'saved'
+                        ? 'Saved'
+                        : message.plannerStatus === 'links_pending'
+                          ? 'Links pending'
+                          : 'Not saved'}
+                    </span>
+                  </div>
+                  <div className="mt-3 space-y-1 text-xs leading-relaxed text-ink/65">
+                    <p>{formatDubaiDateTime(message.plannerResult?.startAt ?? message.planner.startAt, 'short')}</p>
+                    <p>{message.planner.locationName} · {message.planner.type}</p>
+                    <p>
+                      Invitees: {message.planner.memberIds.length
+                        ? message.planner.memberIds.map(id => members.find(member => member.id === id)?.name ?? 'Unavailable member').join(', ')
+                        : 'None selected'}
+                    </p>
+                  </div>
+                  <p className="mt-3 text-[10px] leading-relaxed text-ink/50">
+                    Prepared by AI. Review every detail before saving. Nothing will be sent automatically.
+                  </p>
+                  {message.plannerStatus === 'links_pending' ? (
+                    <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[10px] leading-relaxed text-amber-900">
+                      The gathering was saved, but its requested links were not prepared. Use Calendar to prepare them from the saved gathering.
+                    </p>
+                  ) : null}
+                  {message.plannerStatus === 'saved' || message.plannerStatus === 'links_pending' ? (
+                    onNavigateToActionResult ? (
+                      <button
+                        type="button"
+                        onClick={() => viewPlannerMessageInCalendar(message)}
+                        className="mt-4 flex items-center gap-1.5 rounded-xl bg-ink px-4 py-3 text-[9px] font-bold uppercase tracking-widest text-white hover:bg-gold"
+                      >
+                        {message.plannerStatus === 'links_pending' ? 'Prepare links in Calendar' : 'View Calendar'} <ArrowRight size={12} />
+                      </button>
+                    ) : null
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => openPlanner(message.id)}
+                      className="mt-4 flex items-center gap-1.5 rounded-xl bg-ink px-4 py-3 text-[9px] font-bold uppercase tracking-widest text-white hover:bg-gold"
+                    >
+                      {message.plannerStatus === 'dismissed' ? 'Reopen editable planner' : 'Open editable planner'}
+                      <ArrowRight size={12} />
+                    </button>
                   )}
                 </div>
               )}
@@ -541,10 +1240,12 @@ export function Assistant({
           </motion.div>
         ))}
 
-        {isLoading && (
+        {(isLoading || isRestoring) && (
           <div className="flex items-center gap-3 pl-12 text-gold">
             <LoaderCircle className="animate-spin" size={17} />
-            <span className="text-[10px] font-bold uppercase tracking-widest">Reading permitted family context</span>
+            <span className="text-[10px] font-bold uppercase tracking-widest">
+              {isRestoring ? 'Restoring private conversation' : 'Reading permitted family context'}
+            </span>
           </div>
         )}
         <div ref={messagesEndRef} />
@@ -573,7 +1274,7 @@ export function Assistant({
           type="checkbox"
           checked={aiProcessingConsent}
           onChange={(event) => setAiProcessingConsent(event.target.checked)}
-          disabled={!familyId || isLoading}
+          disabled={!familyId || isLoading || isRestoring}
           className="mt-0.5 size-4 accent-gold"
         />
         <span>
@@ -593,7 +1294,7 @@ export function Assistant({
               sendMessage();
             }
           }}
-          disabled={!familyId || isLoading}
+          disabled={!familyId || isLoading || isRestoring}
           placeholder="For example: Add my aunt Maryam, my mother's sister..."
           className="w-full rounded-2xl border border-sepia bg-white px-5 py-4 pr-14 text-sm text-ink shadow-sm focus:outline-none focus:ring-1 focus:ring-gold disabled:bg-sand disabled:text-ink/35"
         />
@@ -601,12 +1302,75 @@ export function Assistant({
           type="button"
           aria-label="Send request"
           onClick={() => sendMessage()}
-          disabled={!familyId || !input.trim() || !aiProcessingConsent || isLoading}
+          disabled={!familyId || !input.trim() || !aiProcessingConsent || isLoading || isRestoring}
           className="absolute right-2 top-2 rounded-xl bg-ink p-3 text-white shadow-lg transition-all hover:bg-gold disabled:opacity-30"
         >
           <Send size={18} />
         </button>
       </div>
+
+      {activePlannerMessage?.planner && familyId ? (
+        <div ref={plannerDialogRef} tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center bg-ink/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="AI gathering planner">
+          <section className="flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-[2rem] border border-sepia bg-white shadow-2xl">
+            <header className="flex items-center justify-between border-b border-sepia bg-sand px-6 py-5">
+              <div>
+                <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-gold">AI Helper</p>
+                <h3 className="font-serif text-xl font-bold italic text-ink">
+                  {activePlannerStage === 'details'
+                    ? 'Plan a gathering'
+                    : activePlannerStage === 'review'
+                      ? 'Review before saving'
+                      : activePlannerStage === 'links'
+                        ? 'Invitation links'
+                        : 'Gathering saved'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={closeActivePlanner}
+                disabled={plannerBusy}
+                className="rounded-full p-1.5 hover:bg-sepia/30 disabled:opacity-40"
+                aria-label="Close gathering planner"
+              >
+                <X size={20} />
+              </button>
+            </header>
+            <GatheringPlanner
+              familyId={familyId}
+              members={members}
+              prefill={activePlannerMessage.planner}
+              source="ai"
+              idempotencyKey={activePlannerMessage.id}
+              onCancel={closeActivePlanner}
+              onGatheringChanged={() => {
+                if (sessionId && isCurrentConversationContext(familyId, sessionId)) {
+                  void handlePlannerGatheringChanged(familyId, sessionId);
+                }
+              }}
+              onSubmissionResult={result => {
+                if (sessionId && isCurrentConversationContext(familyId, sessionId)) {
+                  handlePlannerSubmissionResult(activePlannerMessage.id, result);
+                }
+              }}
+              onViewCalendar={onNavigateToActionResult ? gathering => {
+                if (sessionId && isCurrentOpenPlannerContext(familyId, sessionId, activePlannerMessage.id)) {
+                  viewPlannerResultInCalendar(gathering);
+                }
+              } : undefined}
+              onStageChange={stage => {
+                if (sessionId && isCurrentOpenPlannerContext(familyId, sessionId, activePlannerMessage.id)) {
+                  handlePlannerStageChange(stage);
+                }
+              }}
+              onBusyChange={busy => {
+                if (sessionId && isCurrentOpenPlannerContext(familyId, sessionId, activePlannerMessage.id)) {
+                  setPlannerBusy(busy);
+                }
+              }}
+            />
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }
