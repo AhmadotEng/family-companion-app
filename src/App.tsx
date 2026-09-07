@@ -4,7 +4,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { LoaderCircle, LogOut, RefreshCw, ShieldAlert } from 'lucide-react';
+import { LoaderCircle, RefreshCw, ShieldAlert } from 'lucide-react';
 import { Layout } from './components/Layout';
 import { Home } from './screens/Home';
 import {
@@ -33,8 +33,8 @@ import { AuthSession, FamilyContext, FamilyMember, Gathering } from './types';
 
 function FullPageStatus({ message }: { message: string }) {
   return (
-    <main className="min-h-screen bg-sand flex items-center justify-center p-6">
-      <div className="bg-white border border-sepia rounded-[2rem] px-10 py-9 text-center shadow-xl">
+    <main className="standalone-page min-h-[100dvh] bg-sand flex items-center justify-center p-6">
+      <div className="w-full min-w-0 max-w-md rounded-3xl border border-sepia bg-white px-5 py-7 text-center shadow-xl sm:rounded-[2rem] sm:px-10 sm:py-9">
         <LoaderCircle className="animate-spin text-gold mx-auto" size={30} />
         <p className="font-serif italic text-lg mt-4">{message}</p>
       </div>
@@ -85,6 +85,7 @@ function AuthenticatedApp() {
   const [calendarRefreshVersion, setCalendarRefreshVersion] = useState(0);
   const [calendarFocusTarget, setCalendarFocusTarget] = useState<CalendarFocusTarget | null>(null);
   const [archiveRefreshVersion, setArchiveRefreshVersion] = useState(0);
+  const [heritageLocationSettingsRequested, setHeritageLocationSettingsRequested] = useState(false);
   const [booting, setBooting] = useState(true);
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState('');
@@ -276,6 +277,7 @@ function AuthenticatedApp() {
       setPersistentGatherings([]);
       setGatheringPlanPrefill(null);
       setCalendarFocusTarget(null);
+      setHeritageLocationSettingsRequested(false);
       setContextLoading(false);
       setContextError('');
       setActiveTab('home');
@@ -294,6 +296,15 @@ function AuthenticatedApp() {
   }, []);
 
   const clearGatheringPlanPrefill = useCallback(() => setGatheringPlanPrefill(null), []);
+
+  const openHeritageLocationSettings = useCallback(() => {
+    setHeritageLocationSettingsRequested(true);
+    setActiveTab('tree');
+  }, []);
+
+  const clearHeritageLocationSettingsRequest = useCallback(() => {
+    setHeritageLocationSettingsRequested(false);
+  }, []);
 
   const currentFamilyId = familyContext?.family.id || activeFamilyId || '';
   const currentMemberId = familyContext?.currentUser.linkedMemberId;
@@ -330,6 +341,8 @@ function AuthenticatedApp() {
             currentUserMemberId={currentMemberId}
             familyRole={familyContext?.family.role}
             onRefresh={refreshContext}
+            openLocationSettingsRequest={heritageLocationSettingsRequested}
+            onLocationSettingsRequestHandled={clearHeritageLocationSettingsRequest}
           />
         );
       case 'calendar':
@@ -361,19 +374,19 @@ function AuthenticatedApp() {
       default:
         return null;
     }
-  }, [activeTab, archiveRefreshVersion, assistantPreset, calendarFocusTarget, calendarRefreshVersion, clearGatheringPlanPrefill, currentFamilyId, currentMemberId, familyContext?.family.name, familyContext?.family.role, gatheringPlanPrefill, handleAgentActionCompleted, homeGatherings, members, navigateToAgentActionResult, openGatheringDraftFromPlan, refreshContext, session]);
+  }, [activeTab, archiveRefreshVersion, assistantPreset, calendarFocusTarget, calendarRefreshVersion, clearGatheringPlanPrefill, clearHeritageLocationSettingsRequest, currentFamilyId, currentMemberId, familyContext?.family.name, familyContext?.family.role, gatheringPlanPrefill, handleAgentActionCompleted, heritageLocationSettingsRequested, homeGatherings, members, navigateToAgentActionResult, openGatheringDraftFromPlan, refreshContext, session]);
 
   if (booting) return <FullPageStatus message="Opening your private family space…" />;
   if (!session) return <AuthScreen onAuthenticated={handleAuthenticated} />;
 
   if (!activeFamilyId) {
     return (
-      <main className="min-h-screen bg-sand flex items-center justify-center p-6">
-        <section className="max-w-md bg-white border border-sepia rounded-[2rem] p-8 text-center shadow-xl">
+      <main className="standalone-page min-h-[100dvh] bg-sand flex items-center justify-center p-6">
+        <section className="w-full min-w-0 max-w-md rounded-3xl border border-sepia bg-white p-5 text-center shadow-xl sm:rounded-[2rem] sm:p-8">
           <ShieldAlert className="text-gold mx-auto" size={32} />
           <h1 className="font-serif italic text-2xl mt-4">No family space assigned</h1>
           <p className="text-sm text-ink/60 mt-3">This account is valid, but it is not linked to a family yet. Ask a family administrator to add it.</p>
-          <button onClick={handleLogout} className="mt-6 text-[10px] uppercase tracking-widest font-bold text-gold hover:text-ink">Sign out</button>
+          <button onClick={handleLogout} className="mt-6 min-h-11 rounded-xl px-4 text-sm font-semibold text-gold-ink hover:bg-sand hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink">Sign out</button>
         </section>
       </main>
     );
@@ -383,14 +396,14 @@ function AuthenticatedApp() {
 
   if (contextError && !familyContext) {
     return (
-      <main className="min-h-screen bg-sand flex items-center justify-center p-6">
-        <section className="max-w-md bg-white border border-sepia rounded-[2rem] p-8 text-center shadow-xl">
+      <main className="standalone-page min-h-[100dvh] bg-sand flex items-center justify-center p-6">
+        <section className="w-full min-w-0 max-w-md rounded-3xl border border-sepia bg-white p-5 text-center shadow-xl sm:rounded-[2rem] sm:p-8">
           <ShieldAlert className="text-red-500 mx-auto" size={32} />
           <h1 className="font-serif italic text-2xl mt-4">Family data could not load</h1>
-          <p role="alert" className="text-sm text-ink/60 mt-3">{contextError}</p>
-          <div className="flex justify-center gap-4 mt-6">
-            <button onClick={refreshContext} className="bg-ink text-white px-5 py-2.5 rounded-xl text-[10px] uppercase tracking-widest font-bold flex items-center gap-2"><RefreshCw size={14} /> Retry</button>
-            <button onClick={handleLogout} className="border border-sepia px-5 py-2.5 rounded-xl text-[10px] uppercase tracking-widest font-bold">Sign out</button>
+          <p role="alert" className="mt-3 break-words text-sm text-ink/60">{contextError}</p>
+          <div className="mt-6 flex flex-wrap justify-center gap-3 sm:gap-4">
+            <button onClick={refreshContext} className="flex min-h-11 items-center gap-2 rounded-xl bg-ink px-5 text-sm font-semibold text-white"><RefreshCw size={14} /> Retry</button>
+            <button onClick={handleLogout} className="min-h-11 rounded-xl border border-sepia px-5 text-sm font-semibold">Sign out</button>
           </div>
         </section>
       </main>
@@ -398,25 +411,36 @@ function AuthenticatedApp() {
   }
 
   const titles: Record<string, string> = {
-    home: 'Family Dashboard',
-    assistant: 'AI Family Companion',
-    activities: 'Family Activities',
-    tree: 'Digital Family Tree',
-    calendar: 'Family Calendar',
-    archive: 'Memories & Rewards',
-    more: 'Settings & Profile'
+    home: 'Dashboard',
+    assistant: 'AI Helper',
+    activities: 'Activities',
+    tree: 'Heritage',
+    calendar: 'Gatherings',
+    archive: 'Memories and rewards',
+    more: 'Profile and account'
   };
 
   return (
     <div className="relative">
-      <Layout activeTab={activeTab} setActiveTab={setActiveTab} title={titles[activeTab]}>
+      <Layout
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        title={titles[activeTab]}
+        onSignOut={handleLogout}
+        onOpenLocationSettings={openHeritageLocationSettings}
+        accountName={session.user.displayName}
+      >
         {contextError && (
           <div role="alert" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900 flex items-center justify-between gap-4">
             <span>{contextError}</span>
-            <button onClick={refreshContext} className="font-bold uppercase tracking-wider">Retry</button>
+            <button onClick={refreshContext} className="min-h-11 rounded-lg px-3 font-bold">Retry</button>
           </div>
         )}
-        <div key={`assistant-${currentFamilyId}`} hidden={activeTab !== 'assistant'}>
+        <div
+          key={`assistant-${currentFamilyId}`}
+          hidden={activeTab !== 'assistant'}
+          className={activeTab === 'assistant' ? 'flex min-h-0 flex-1 flex-col' : undefined}
+        >
           <Assistant
             presetInput={assistantPreset}
             clearPreset={() => setAssistantPreset('')}
@@ -429,17 +453,12 @@ function AuthenticatedApp() {
             onUseReconnectionPlan={openGatheringDraftFromPlan}
           />
         </div>
-        {activeTab !== 'assistant' ? <div key={`screen-${activeTab}`}>{content}</div> : null}
+        {activeTab !== 'assistant' ? (
+          <div key={`screen-${activeTab}`} className={activeTab === 'tree' ? 'flex min-h-0 flex-1 flex-col md:block' : undefined}>
+            {content}
+          </div>
+        ) : null}
       </Layout>
-      <button
-        type="button"
-        onClick={handleLogout}
-        className="fixed right-5 top-6 z-30 flex items-center gap-2 rounded-full border border-sepia bg-white/95 px-3 py-2 text-[9px] font-bold uppercase tracking-widest text-ink/60 shadow-sm hover:border-gold hover:text-ink"
-        aria-label={`Sign out ${session.user.displayName}`}
-        title={`Signed in as ${session.user.email}`}
-      >
-        <LogOut size={13} /> <span className="hidden sm:inline">Sign out</span>
-      </button>
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PersistentGathering } from '../engagementTypes';
+import { formatDubaiDateTime, toDubaiIso } from '../lib/gatheringDate';
 import type { FamilyMember } from '../types';
 
 const apiMocks = vi.hoisted(() => ({
@@ -112,6 +113,35 @@ describe('GatheringPlanner', () => {
     expect((screen.getByLabelText('Sharing option') as HTMLSelectElement).value).toBe('share_link');
     expect(screen.getByText(/Prepared by AI/).textContent).toContain('Nothing will be sent automatically');
     expect(screen.getByText(/planning label only/).textContent).toContain('not been verified');
+    expect((screen.getByLabelText('Title') as HTMLInputElement).className).toContain('text-base');
+    expect(screen.getByLabelText('Search invitees')).toBeTruthy();
+    const footer = document.querySelector('[data-gathering-planner-footer]') as HTMLElement;
+    expect(footer.className).toContain('sticky');
+    expect(footer.className).toContain('safe-area-inset-bottom');
+    expect(document.querySelector('[data-gathering-planner-scroll-region]')?.className).toContain('overscroll-contain');
+  });
+
+  it('searches the bounded invitee list by family name or relationship', async () => {
+    const user = userEvent.setup();
+    render(
+      <GatheringPlanner
+        familyId="family-1"
+        members={members}
+        prefill={aiPrefill}
+        source="ai"
+        onCancel={vi.fn()}
+      />,
+    );
+
+    const search = screen.getByLabelText('Search invitees');
+    await user.type(search, 'sibling');
+    expect(screen.getByRole('checkbox', { name: /Anas/ })).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: /Dad/ })).toBeNull();
+
+    await user.clear(search);
+    await user.type(search, 'missing relative');
+    expect(screen.getByText('No family members match “missing relative”.')).toBeTruthy();
+    expect(document.querySelector('[data-invitee-scroll-region]')?.className).toContain('overflow-y-auto');
   });
 
   it('lets the user edit fields while cancel and review remain non-mutating', async () => {
@@ -154,6 +184,7 @@ describe('GatheringPlanner', () => {
 
     await user.click(screen.getByRole('button', { name: 'Review' }));
     expect(screen.getByText('Final confirmation required')).toBeTruthy();
+    expect(screen.getByText(`${formatDubaiDateTime(toDubaiIso('2099-09-13', '19:15'))} (Asia/Dubai)`)).toBeTruthy();
     expect(screen.getByText('Visit')).toBeTruthy();
     expect(screen.getByText('Edited note')).toBeTruthy();
     expect(screen.getByText('Dad')).toBeTruthy();

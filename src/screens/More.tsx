@@ -1,71 +1,61 @@
-import { Settings, Shield, Bell, Languages, LogOut, ChevronRight, HelpCircle, UserCircle } from 'lucide-react';
+import { Bell, ChevronRight, HelpCircle, Languages, Settings, Shield, UserCircle } from 'lucide-react';
 import { cn } from '../lib/utils';
 import type { AuthUser } from '../types';
 
 export function More({ user }: { user: AuthUser }) {
   const menuItems = [
-    { icon: Shield, label: 'Privacy & Safety' },
+    { icon: Shield, label: 'Privacy and safety' },
     { icon: Bell, label: 'Notifications' },
     { icon: Languages, label: 'Language: English only' },
-    { icon: Settings, label: 'Family Settings' },
-    { icon: HelpCircle, label: 'Help & Support' },
+    { icon: Settings, label: 'Family settings' },
+    { icon: HelpCircle, label: 'Help and support' },
   ];
 
   return (
-    <div className="space-y-8">
-      {/* Profile Card */}
-      <div className="bg-white p-8 rounded-[2rem] border border-sepia shadow-sm flex items-center gap-6 group">
-         <div className="relative flex size-20 items-center justify-center rounded-full border border-sepia bg-sand text-gold shadow-md">
-           <UserCircle size={42} strokeWidth={1.4} />
-         </div>
-         <div>
-            <h3 className="font-serif text-2xl font-bold text-ink italic">{user.displayName}</h3>
-            <p className="text-[10px] text-ink/40 font-bold uppercase tracking-[0.2em] mt-1">{user.email}</p>
-         </div>
-      </div>
+    <div className="min-w-0 space-y-4 sm:space-y-8">
+      <section className="flex min-w-0 items-center gap-4 rounded-2xl border border-sepia bg-white p-4 shadow-sm sm:gap-6 sm:rounded-[2rem] sm:p-8" aria-label="Account profile">
+        <div className="relative flex size-14 shrink-0 items-center justify-center rounded-full border border-sepia bg-sand text-gold shadow-sm sm:size-20 sm:shadow-md">
+          <UserCircle size={34} strokeWidth={1.4} aria-hidden="true" className="sm:hidden" />
+          <UserCircle size={42} strokeWidth={1.4} aria-hidden="true" className="hidden sm:block" />
+        </div>
+        <div className="min-w-0">
+          <h3 className="truncate font-serif text-xl font-bold italic text-ink sm:text-2xl">{user.displayName}</h3>
+          <p className="mt-1 truncate text-sm text-ink/50 sm:text-xs">{user.email}</p>
+        </div>
+      </section>
 
-      {/* Menu Options */}
-      <div className="bg-white rounded-[2rem] border border-sepia overflow-hidden shadow-sm">
-        {menuItems.map((item, i) => (
-          <button 
+      <section className="overflow-hidden rounded-2xl border border-sepia bg-white shadow-sm sm:rounded-[2rem]" aria-label="Account settings">
+        {menuItems.map((item, index) => (
+          <button
+            type="button"
             key={item.label}
             onClick={() => {
               if (item.label.includes('Language')) {
-                alert("The current prototype interface is English-only. Arabic localization is not connected yet.");
+                alert('The current prototype interface is English-only. Arabic localization is not connected yet.');
               } else {
                 alert(`"${item.label}" is a visual placeholder and is not connected in the current prototype.`);
               }
             }}
             className={cn(
-              "w-full px-8 py-5 flex items-center justify-between hover:bg-sand transition-all group text-left",
-              i !== menuItems.length - 1 && "border-b border-sepia"
+              'group flex min-h-14 w-full min-w-0 items-center justify-between gap-3 px-4 py-2.5 text-left transition-colors hover:bg-sand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-gold-ink sm:min-h-16 sm:px-8 sm:py-4',
+              index !== menuItems.length - 1 && 'border-b border-sepia',
             )}
           >
-            <div className="flex items-center gap-5">
-              <div className="p-3 rounded-2xl bg-sand text-ink/40 group-hover:text-gold group-hover:bg-ink transition-all">
-                <item.icon size={20} />
-              </div>
-              <span className="text-[11px] font-bold uppercase tracking-widest text-ink group-hover:text-gold transition-colors">{item.label}</span>
-            </div>
-            <ChevronRight size={18} className="text-ink/20 group-hover:text-gold group-hover:translate-x-1 transition-all" />
+            <span className="flex min-w-0 items-center gap-3 sm:gap-5">
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-sand text-ink/45 transition-colors group-hover:bg-ink group-hover:text-gold sm:size-11 sm:rounded-2xl">
+                <item.icon size={19} aria-hidden="true" />
+              </span>
+              <span className="min-w-0 truncate text-sm font-semibold text-ink transition-colors group-hover:text-gold-ink">{item.label}</span>
+            </span>
+            <ChevronRight size={18} aria-hidden="true" className="shrink-0 text-ink/25 transition-transform group-hover:translate-x-0.5 group-hover:text-gold-ink" />
           </button>
         ))}
-      </div>
+      </section>
 
-      {/* Sign Out */}
-      <button 
-        type="button"
-        disabled
-        title="Use the header control to sign out"
-        className="w-full bg-ink/5 py-5 rounded-[1.5rem] flex items-center justify-center gap-3 text-ink/40 font-bold text-[10px] uppercase tracking-widest cursor-not-allowed shadow-sm"
-      >
-        <LogOut size={18} /> Use header to sign out
-      </button>
-
-      <div className="text-center pb-12 space-y-2">
-         <p className="text-[9px] text-ink/20 font-bold uppercase tracking-[0.4em]">UAE Family Companion • Development preview</p>
-         <p className="text-[9px] text-ink/20 italic font-serif">"Heritage & Harmony for every home"</p>
-      </div>
+      <footer className="space-y-1.5 px-4 pb-6 text-center text-[11px] text-ink/35 sm:pb-12">
+        <p>UAE Family Companion · Development preview</p>
+        <p className="font-serif italic">“Heritage &amp; Harmony for every home”</p>
+      </footer>
     </div>
   );
 }

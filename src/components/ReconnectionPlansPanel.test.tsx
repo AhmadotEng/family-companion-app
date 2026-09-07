@@ -76,6 +76,12 @@ function panelElement(selectedFamilyId: string) {
   );
 }
 
+async function expandPlans(user = userEvent.setup()) {
+  const toggle = await screen.findByRole('button', { name: /Stored reconnection plans/i });
+  if (toggle.getAttribute('aria-expanded') !== 'true') await user.click(toggle);
+  return user;
+}
+
 beforeEach(() => {
   listPlansMock.mockReset();
   updateStatusMock.mockReset();
@@ -87,6 +93,19 @@ afterEach(() => {
 });
 
 describe('ReconnectionPlansPanel lifecycle controls', () => {
+  it('loads behind a collapsed count summary until the user opens it', async () => {
+    renderPanel('active');
+
+    const toggle = await screen.findByRole('button', { name: /Stored reconnection plans.*1 stored/i });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('active family plan')).toBeNull();
+
+    const user = userEvent.setup();
+    await user.click(toggle);
+    expect(await screen.findByText('active family plan')).toBeTruthy();
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  });
+
   it.each([
     {
       status: 'active',
@@ -110,6 +129,7 @@ describe('ReconnectionPlansPanel lifecycle controls', () => {
     },
   ] as const)('shows only valid $status controls', async ({ status, shown, hidden }) => {
     renderPanel(status);
+    await expandPlans();
 
     expect(await screen.findByText(`${status} family plan`)).toBeTruthy();
     for (const label of shown) expect(screen.getByRole('button', { name: label })).toBeTruthy();
@@ -128,6 +148,7 @@ describe('ReconnectionPlansPanel lifecycle controls', () => {
       updateStatusMock.mockResolvedValueOnce({ id: `plan-${currentStatus}`, status: targetStatus });
       renderPanel(currentStatus);
       const user = userEvent.setup();
+      await expandPlans(user);
 
       await user.click(await screen.findByRole('button', { name: buttonLabel }));
 
@@ -144,6 +165,7 @@ describe('ReconnectionPlansPanel lifecycle controls', () => {
     updateStatusMock.mockRejectedValueOnce(new Error(`Could not update ${status}`));
     renderPanel(status);
     const user = userEvent.setup();
+    await expandPlans(user);
 
     await user.click(await screen.findByRole('button', { name: buttonLabel }));
 
@@ -157,6 +179,7 @@ describe('ReconnectionPlansPanel lifecycle controls', () => {
       const onUsePlan = vi.fn();
       renderPanel(status, onUsePlan);
       const user = userEvent.setup();
+      await expandPlans(user);
 
       await user.click(await screen.findByRole('button', { name: 'Open editable draft' }));
 
@@ -200,6 +223,8 @@ describe('ReconnectionPlansPanel lifecycle controls', () => {
       await waitFor(() => expect(listPlansMock).toHaveBeenCalledWith(familyId));
 
       rerender(panelElement(otherFamilyId));
+      await screen.findByRole('button', { name: /Stored reconnection plans.*1 stored/i });
+      await expandPlans();
       expect(await screen.findByText('New family plan')).toBeTruthy();
 
       await act(async () => {
@@ -230,8 +255,11 @@ describe('ReconnectionPlansPanel lifecycle controls', () => {
       const { rerender } = render(panelElement(familyId));
       const user = userEvent.setup();
 
+      await expandPlans(user);
       await user.click(await screen.findByRole('button', { name: 'Accept' }));
       rerender(panelElement(otherFamilyId));
+      await screen.findByRole('button', { name: /Stored reconnection plans.*1 stored/i });
+      await expandPlans(user);
       await screen.findByText('New family plan');
       await user.click(screen.getByRole('button', { name: 'Accept' }));
       expect((screen.getByRole('button', { name: 'Accept' }) as HTMLButtonElement).disabled).toBe(true);

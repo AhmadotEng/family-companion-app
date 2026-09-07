@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { FamilyMember, FamilyRole, LocationPrecision, LocationVisibility } from '../types';
-import { Plus, Search, Heart, X, Calendar, Phone, Sparkles, UserPlus, Trash2, Users, Share2, Camera, Upload, UserCircle, LoaderCircle, LocateFixed, MapPin, Save, ShieldCheck } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { Plus, Search, Heart, X, Calendar, Phone, Sparkles, UserPlus, Trash2, Share2, Camera, Upload, UserCircle, LoaderCircle, LocateFixed, MapPin, Save, ShieldCheck, Maximize2, Minimize2, ZoomIn, ZoomOut, Crosshair, RotateCcw, List, Network, Info } from 'lucide-react';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { cn } from '../lib/utils';
-import { computeTreeLayout, generateConnections } from '../lib/treeLayout';
+import { calculateFitTransform, computeTreeLayout, generateConnections, getTreeBounds, groupMembersByFocus, relationshipLabelForFocus } from '../lib/treeLayout';
 import { ApiError, familyApi } from '../api/client';
 import { buildAddRelativeRequest, RelativeLinkType } from '../lib/familyRelationship';
+import { useModalFocusTrap } from '../lib/modalFocus';
 
 interface FamilyTreeProps {
   familyId: string;
@@ -14,6 +15,8 @@ interface FamilyTreeProps {
   currentUserMemberId?: string;
   familyRole?: FamilyRole;
   onRefresh: () => Promise<void> | void;
+  openLocationSettingsRequest?: boolean;
+  onLocationSettingsRequestHandled?: () => void;
 }
 
 export const getGeneration = (member: FamilyMember): number => {
@@ -67,6 +70,7 @@ function CameraCaptureModal({ onCapture, onClose }: { onCapture: (photo: string)
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const streamRef = React.useRef<MediaStream | null>(null);
   const [error, setError] = useState('');
+  const dialogRef = useModalFocusTrap<HTMLDivElement>({ active: true, onEscape: onClose });
 
   React.useEffect(() => {
     let mounted = true;
@@ -120,14 +124,14 @@ function CameraCaptureModal({ onCapture, onClose }: { onCapture: (photo: string)
   };
 
   return (
-    <div className="fixed inset-0 bg-ink/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
-      <div className="bg-white w-full max-w-md rounded-[2rem] border border-sepia shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-[90] flex items-end bg-ink/50 backdrop-blur-sm md:items-center md:justify-center md:p-4">
+      <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="camera-heading" className="max-h-[100dvh] w-full max-w-md overflow-y-auto rounded-t-[2rem] border border-sepia bg-white pb-[env(safe-area-inset-bottom)] shadow-2xl md:rounded-[2rem]">
         <div className="bg-sand p-5 flex items-center justify-between border-b border-sepia">
           <div className="flex items-center gap-2">
             <Camera size={18} className="text-gold" />
-            <h3 className="font-serif text-xl text-ink font-bold italic">Take Profile Photo</h3>
+            <h3 id="camera-heading" className="font-serif text-xl text-ink font-bold italic">Take profile photo</h3>
           </div>
-          <button type="button" onClick={onClose} className="p-1 rounded-full hover:bg-sepia/20 transition-colors">
+          <button type="button" onClick={onClose} className="flex size-11 items-center justify-center rounded-full hover:bg-sepia/20 transition-colors" aria-label="Close camera">
             <X size={20} />
           </button>
         </div>
@@ -144,14 +148,14 @@ function CameraCaptureModal({ onCapture, onClose }: { onCapture: (photo: string)
               type="button"
               onClick={handleCapture}
               disabled={Boolean(error)}
-              className="flex-1 bg-ink text-white py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest hover:bg-gold transition-colors disabled:opacity-40 disabled:pointer-events-none"
+              className="min-h-11 flex-1 rounded-xl bg-ink px-4 text-sm font-semibold text-white transition-colors hover:bg-gold-ink disabled:pointer-events-none disabled:opacity-40"
             >
               Capture
             </button>
             <button
               type="button"
               onClick={onClose}
-              className="px-6 bg-white border border-sepia text-ink/60 py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest hover:text-ink hover:border-gold transition-all"
+              className="min-h-11 rounded-xl border border-sepia bg-white px-6 text-sm font-semibold text-ink/60 transition-all hover:border-gold hover:text-ink"
             >
               Cancel
             </button>
@@ -181,19 +185,19 @@ function PhotoPicker({
     <div className="flex items-center gap-4 bg-sand/25 border border-sepia/50 rounded-2xl p-4">
       <img src={preview} alt="Profile preview" className="size-20 min-w-20 min-h-20 shrink-0 rounded-full object-cover overflow-hidden border border-sepia bg-white shadow-sm" />
       <div className="flex-1 min-w-0">
-        <p className="text-[10px] font-bold uppercase tracking-wider text-ink/50 mb-2">Profile Photo</p>
+        <p className="mb-2 text-sm font-semibold text-ink/60">Profile photo</p>
         <div className="flex flex-wrap gap-2">
-          <button type="button" disabled title="Private media storage is not connected yet" className="px-3 py-2 bg-white border border-sepia rounded-xl text-[9px] font-bold uppercase tracking-widest text-ink/30 cursor-not-allowed flex items-center gap-1.5">
+          <button type="button" disabled title="Private media storage is not connected yet" className="flex min-h-11 items-center gap-1.5 rounded-xl border border-sepia bg-white px-3 text-xs font-semibold text-ink/30 cursor-not-allowed">
             <Upload size={13} /> Upload
           </button>
-          <button type="button" disabled title="Private media storage is not connected yet" className="px-3 py-2 bg-white border border-sepia rounded-xl text-[9px] font-bold uppercase tracking-widest text-ink/30 cursor-not-allowed flex items-center gap-1.5">
+          <button type="button" disabled title="Private media storage is not connected yet" className="flex min-h-11 items-center gap-1.5 rounded-xl border border-sepia bg-white px-3 text-xs font-semibold text-ink/30 cursor-not-allowed">
             <Camera size={13} /> Camera
           </button>
-          <button type="button" disabled title="Private media storage is not connected yet" className="px-3 py-2 bg-white border border-sepia rounded-xl text-[9px] font-bold uppercase tracking-widest text-ink/30 cursor-not-allowed flex items-center gap-1.5">
+          <button type="button" disabled title="Private media storage is not connected yet" className="flex min-h-11 items-center gap-1.5 rounded-xl border border-sepia bg-white px-3 text-xs font-semibold text-ink/30 cursor-not-allowed">
             <UserCircle size={13} /> Anonymous
           </button>
         </div>
-        <p className="text-[9px] text-ink/40 mt-2">Private media storage is the next milestone; no photo is uploaded locally.</p>
+        <p className="mt-2 text-xs text-ink/45">Private media storage is the next milestone; no photo is uploaded locally.</p>
       </div>
     </div>
   );
@@ -239,7 +243,17 @@ function FloralCorner({ side }: { side: 'left' | 'right' }) {
   );
 }
 
-export function FamilyTree({ familyId, familyName, members, currentUserMemberId, familyRole = 'member', onRefresh }: FamilyTreeProps) {
+export function FamilyTree({
+  familyId,
+  familyName,
+  members,
+  currentUserMemberId,
+  familyRole = 'member',
+  onRefresh,
+  openLocationSettingsRequest = false,
+  onLocationSettingsRequestHandled,
+}: FamilyTreeProps) {
+  const prefersReducedMotion = useReducedMotion();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPerson, setSelectedPerson] = useState<FamilyMember | null>(null);
   const [addModalOpen, setAddModalOpen] = useState(false);
@@ -255,24 +269,46 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
   const [locationError, setLocationError] = useState('');
   const [locating, setLocating] = useState(false);
 
-  // Panning State
+  // Interactive mobile tree state. Relationship data remains read-only here;
+  // focusing only recomputes presentation coordinates around another member.
+  const [focusedMemberId, setFocusedMemberId] = useState(currentUserMemberId || members[0]?.id || '');
+  const [viewMode, setViewMode] = useState<'tree' | 'list'>('tree');
+  const [locationSheetOpen, setLocationSheetOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const locationDialogRef = useModalFocusTrap<HTMLElement>({
+    active: locationSheetOpen,
+    onEscape: () => setLocationSheetOpen(false),
+    escapeDisabled: locating
+  });
+  const addDialogRef = useModalFocusTrap<HTMLDivElement>({
+    active: addModalOpen,
+    onEscape: () => setAddModalOpen(false),
+    escapeDisabled: saving
+  });
+  const personDialogRef = useModalFocusTrap<HTMLDivElement>({
+    active: Boolean(selectedPerson),
+    onEscape: () => setSelectedPerson(null),
+    escapeDisabled: saving
+  });
+  const treePanelRef = React.useRef<HTMLDivElement | null>(null);
+  const canvasRef = React.useRef<HTMLDivElement | null>(null);
+  const pointersRef = React.useRef<Map<number, { x: number; y: number }>>(new Map());
+  const gestureRef = React.useRef<{
+    midpoint?: { x: number; y: number };
+    distance?: number;
+    lastPoint?: { x: number; y: number };
+  }>({});
+  const scaleRef = React.useRef(1);
+  const panRef = React.useRef({ x: 0, y: 0 });
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    setIsDragging(true);
-    setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging) return;
-    setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
-  };
-
-  const handleMouseUp = () => {
-    setIsDragging(false);
-  };
+  React.useEffect(() => {
+    if (!openLocationSettingsRequest || !currentUserMemberId) return;
+    setLocationSheetOpen(true);
+    onLocationSettingsRequestHandled?.();
+  }, [currentUserMemberId, onLocationSettingsRequestHandled, openLocationSettingsRequest]);
 
   // Form state for adding a relative
   const [formName, setFormName] = useState('');
@@ -299,6 +335,37 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
       setFormRelatedToId(currentUserMemberId || members[0]?.id || '');
     }
   }, [currentUserMemberId, formRelatedToId, members]);
+
+  React.useEffect(() => {
+    if (!members.some(member => member.id === focusedMemberId)) {
+      setFocusedMemberId(currentUserMemberId || members[0]?.id || '');
+    }
+  }, [currentUserMemberId, focusedMemberId, members]);
+
+  React.useEffect(() => {
+    scaleRef.current = scale;
+  }, [scale]);
+
+  React.useEffect(() => {
+    panRef.current = pan;
+  }, [pan]);
+
+  React.useEffect(() => {
+    const handleFullscreenChange = () => {
+      if (document.fullscreenElement !== treePanelRef.current) setIsFullscreen(false);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  React.useEffect(() => {
+    if (!isFullscreen || document.fullscreenElement) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsFullscreen(false);
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isFullscreen]);
 
   React.useEffect(() => {
     if (!selectedPerson) return;
@@ -570,15 +637,29 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
     }
   };
 
-  // Tree Layout Computation
-  const X_SPACING = 280;
-  const Y_SPACING = 180;
-  
+  // Compact coordinates keep phone connectors short while the same graph
+  // remains comfortably readable on tablet and desktop.
+  const X_SPACING = 214;
+  const Y_SPACING = 152;
+
   const layoutNodes = React.useMemo(
-    () => computeTreeLayout(members, currentUserMemberId || members[0]?.id),
-    [currentUserMemberId, members]
+    () => computeTreeLayout(members, focusedMemberId || currentUserMemberId || members[0]?.id),
+    [currentUserMemberId, focusedMemberId, members]
   );
   const connectionLines = React.useMemo(() => generateConnections(layoutNodes, X_SPACING, Y_SPACING), [layoutNodes]);
+  const treeBounds = React.useMemo(
+    // Extra vertical extent includes curved partner connectors above nodes.
+    () => getTreeBounds(layoutNodes, X_SPACING, Y_SPACING, 116, 250),
+    [layoutNodes]
+  );
+  const focusedMember = React.useMemo(
+    () => members.find(member => member.id === focusedMemberId) || members[0],
+    [focusedMemberId, members]
+  );
+  const relationshipGroups = React.useMemo(
+    () => groupMembersByFocus(members, focusedMember?.id || ''),
+    [focusedMember?.id, members]
+  );
   const connectionHearts = React.useMemo(() => {
     const hearts = new Map<string, { id: string; x: number; y: number }>();
 
@@ -594,71 +675,275 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
     return Array.from(hearts.values());
   }, [connectionLines]);
 
+  const applyTransform = React.useCallback((nextScale: number, nextPan: { x: number; y: number }) => {
+    const boundedScale = Math.min(2.25, Math.max(0.02, nextScale));
+    scaleRef.current = boundedScale;
+    panRef.current = nextPan;
+    setScale(boundedScale);
+    setPan(nextPan);
+  }, []);
+
+  const fitTree = React.useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !layoutNodes.length) return;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const compactCanvas = rect.height < 240;
+    const reservedFocusedCardHeight = compactCanvas ? 0 : 72;
+    const fitPadding = compactCanvas ? 8 : 28;
+    const next = calculateFitTransform(
+      treeBounds,
+      rect.width,
+      Math.max(1, rect.height - reservedFocusedCardHeight),
+      fitPadding,
+      0.02,
+      1.05
+    );
+    applyTransform(next.scale, { x: next.x, y: next.y - reservedFocusedCardHeight / 2 });
+  }, [applyTransform, layoutNodes.length, treeBounds]);
+
+  const centerOnMember = React.useCallback((memberId: string, preferredScale?: number) => {
+    const node = layoutNodes.find(candidate => candidate.member.id === memberId);
+    if (!node) return;
+    const nextScale = preferredScale ?? Math.max(0.72, scaleRef.current);
+    applyTransform(nextScale, {
+      x: -(node.x * X_SPACING * nextScale),
+      y: -(node.y * Y_SPACING * nextScale)
+    });
+  }, [applyTransform, layoutNodes]);
+
+  const focusIntentRef = React.useRef(false);
+  const handleFocusMember = React.useCallback((memberId: string) => {
+    if (memberId === focusedMemberId) {
+      setViewMode('tree');
+      centerOnMember(memberId, Math.max(0.76, scaleRef.current));
+      return;
+    }
+    focusIntentRef.current = true;
+    setFocusedMemberId(memberId);
+    setViewMode('tree');
+  }, [centerOnMember, focusedMemberId]);
+
+  React.useLayoutEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      if (focusIntentRef.current) {
+        focusIntentRef.current = false;
+        centerOnMember(focusedMemberId, Math.max(0.76, scaleRef.current));
+      } else {
+        fitTree();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [centerOnMember, fitTree, focusedMemberId, members, viewMode]);
+
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const handleResize = () => fitTree();
+    window.addEventListener('resize', handleResize);
+    if (typeof ResizeObserver === 'undefined') {
+      return () => window.removeEventListener('resize', handleResize);
+    }
+    const observer = new ResizeObserver(handleResize);
+    observer.observe(canvas);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [fitTree, viewMode]);
+
+  const handleZoom = (factor: number) => {
+    applyTransform(scaleRef.current * factor, panRef.current);
+  };
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    setIsDragging(true);
+    const points = Array.from(pointersRef.current.values()) as Array<{ x: number; y: number }>;
+    if (points.length === 1) {
+      gestureRef.current = { lastPoint: points[0] };
+    } else if (points.length === 2) {
+      gestureRef.current = {
+        midpoint: { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 },
+        distance: Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y)
+      };
+    }
+  };
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!pointersRef.current.has(event.pointerId)) return;
+    event.preventDefault();
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const points = Array.from(pointersRef.current.values()) as Array<{ x: number; y: number }>;
+
+    if (points.length === 1) {
+      const previous = gestureRef.current.lastPoint || points[0];
+      const nextPan = {
+        x: panRef.current.x + points[0].x - previous.x,
+        y: panRef.current.y + points[0].y - previous.y
+      };
+      gestureRef.current = { lastPoint: points[0] };
+      applyTransform(scaleRef.current, nextPan);
+      return;
+    }
+
+    const midpoint = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 };
+    const distance = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
+    const previousDistance = gestureRef.current.distance || distance;
+    const previousMidpoint = gestureRef.current.midpoint || midpoint;
+    const nextScale = Math.min(2.25, Math.max(0.02, scaleRef.current * (distance / Math.max(1, previousDistance))));
+    const canvasRect = canvasRef.current?.getBoundingClientRect();
+    const relativeMidpoint = canvasRect
+      ? { x: midpoint.x - canvasRect.left - canvasRect.width / 2, y: midpoint.y - canvasRect.top - canvasRect.height / 2 }
+      : midpoint;
+    const worldPoint = {
+      x: (relativeMidpoint.x - panRef.current.x) / scaleRef.current,
+      y: (relativeMidpoint.y - panRef.current.y) / scaleRef.current
+    };
+    applyTransform(nextScale, {
+      x: relativeMidpoint.x - worldPoint.x * nextScale + midpoint.x - previousMidpoint.x,
+      y: relativeMidpoint.y - worldPoint.y * nextScale + midpoint.y - previousMidpoint.y
+    });
+    gestureRef.current = { midpoint, distance };
+  };
+
+  const handlePointerEnd = (event: React.PointerEvent<HTMLDivElement>) => {
+    pointersRef.current.delete(event.pointerId);
+    const remaining = Array.from(pointersRef.current.values()) as Array<{ x: number; y: number }>;
+    if (remaining.length === 1) gestureRef.current = { lastPoint: remaining[0] };
+    else if (remaining.length === 0) {
+      gestureRef.current = {};
+      setIsDragging(false);
+    }
+  };
+
+  const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    handleZoom(event.deltaY < 0 ? 1.1 : 0.9);
+  };
+
+  const handleFullscreen = async () => {
+    const panel = treePanelRef.current;
+    if (!panel) return;
+    if (isFullscreen) {
+      if (document.fullscreenElement) await document.exitFullscreen?.();
+      setIsFullscreen(false);
+      return;
+    }
+    try {
+      if (panel.requestFullscreen) await panel.requestFullscreen();
+      setIsFullscreen(true);
+    } catch {
+      // iOS browsers without the Fullscreen API still get an in-app full-screen layer.
+      setIsFullscreen(true);
+    }
+  };
+
+  const resetTree = () => {
+    setFocusedMemberId(currentUserMemberId || members[0]?.id || '');
+    applyTransform(1, { x: 0, y: 0 });
+  };
+
+  const renderLocationControls = (idPrefix: string) => (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <label htmlFor={`${idPrefix}-precision`} className="text-xs font-semibold text-ink/70">
+          Precision
+          <select id={`${idPrefix}-precision`} value={locationPrecision} onChange={event => setLocationPrecision(event.target.value as LocationPrecision)} className="mt-1 min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-3 text-base text-ink sm:text-sm">
+            <option value="approximate">Approximate area</option>
+            <option value="city">City-level</option>
+            <option value="exact">Exact (private storage)</option>
+          </select>
+        </label>
+        <label htmlFor={`${idPrefix}-visibility`} className="text-xs font-semibold text-ink/70">
+          Visible to
+          <select id={`${idPrefix}-visibility`} value={locationVisibility} onChange={event => setLocationVisibility(event.target.value as LocationVisibility)} className="mt-1 min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-3 text-base text-ink sm:text-sm">
+            <option value="private">Only me</option>
+            <option value="family_admin">Family admins</option>
+            <option value="family">Family</option>
+          </select>
+        </label>
+        <label htmlFor={`${idPrefix}-expiry`} className="text-xs font-semibold text-ink/70">
+          Expires
+          <select id={`${idPrefix}-expiry`} value={locationExpiryHours} onChange={event => setLocationExpiryHours(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-3 text-base text-ink sm:text-sm">
+            <option value="24">24 hours</option>
+            <option value="168">7 days</option>
+            <option value="720">30 days</option>
+            <option value="">Until replaced</option>
+          </select>
+        </label>
+      </div>
+      <label className="flex min-h-11 items-start gap-3 text-sm leading-relaxed text-ink/65">
+        <input type="checkbox" checked={locationConsent} onChange={event => setLocationConsent(event.target.checked)} className="mt-1 size-5 shrink-0 accent-[#C5A059]" />
+        I consent to this one-time location request and the selected visibility.
+      </label>
+      <button type="button" onClick={handleShareMyLocation} disabled={!locationConsent || locating} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-ink px-4 text-sm font-semibold text-white transition-colors hover:bg-gold-ink disabled:opacity-40">
+        {locating ? <LoaderCircle size={16} className="animate-spin motion-reduce:animate-none" /> : <LocateFixed size={16} />}
+        {locating ? 'Requesting permission' : 'Request and save location'}
+      </button>
+      {members.find(member => member.id === currentUserMemberId)?.safeLocation && (
+        <button type="button" onClick={handleRevokeMyLocation} disabled={locating} className="min-h-11 w-full rounded-xl border border-red-200 bg-red-50 px-4 text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-40">
+          Revoke consent and delete location
+        </button>
+      )}
+      {locationStatus && <p role="status" className="text-sm text-emerald-700">{locationStatus}</p>}
+      {locationError && <p role="alert" className="text-sm text-red-600">{locationError}</p>}
+    </div>
+  );
+
   return (
-    <div className="space-y-8 flex flex-col h-full bg-sand">
-      {/* Header Info */}
-      <section className="bg-white p-8 rounded-[2rem] border border-sepia shadow-sm relative overflow-hidden flex flex-col items-center text-center">
-        <FloralCorner side="left" />
-        <FloralCorner side="right" />
-        <div className="relative z-10 flex flex-col gap-6 items-center w-full">
-          <div className="space-y-1">
-            <p className="text-[10px] uppercase font-bold tracking-[0.3em] text-ink/40">Digital Family Tree of</p>
-            <h3 className="text-4xl font-serif italic text-ink tracking-wide">{familyName}</h3>
-            <div className="w-16 h-px bg-sepia mx-auto mt-4 opacity-50 border-t border-dashed"></div>
+    <div className="heritage-root flex h-full min-h-0 flex-1 flex-col gap-3 overflow-hidden bg-sand lg:h-auto lg:flex-none lg:gap-8 lg:overflow-visible">
+      <section className="heritage-hero relative shrink-0 overflow-hidden rounded-2xl border border-sepia bg-white p-3 shadow-sm lg:rounded-[2rem] lg:p-8">
+        <div className="pointer-events-none hidden lg:block"><FloralCorner side="left" /><FloralCorner side="right" /></div>
+        <div className="heritage-hero-inner relative z-10 flex flex-col gap-3 lg:items-center lg:gap-6 lg:text-center">
+          <div className="heritage-hero-family min-w-0 w-full lg:flex-none">
+            <p className="hidden text-xs font-semibold text-ink/45 lg:block">Digital family tree of</p>
+            <h3 className="truncate font-serif text-xl italic tracking-wide text-ink lg:text-4xl">{familyName}</h3>
+            <p className="mt-0.5 text-xs text-ink/55 lg:hidden">{members.length} {members.length === 1 ? 'person' : 'people'} in your Heritage tree</p>
           </div>
-          <div className="flex gap-3 w-full max-w-lg justify-center">
-            {canAdministerFamily && (
-              <button
-                onClick={() => setAddModalOpen(true)}
-                disabled={!members.length || saving}
-                className="bg-ink text-white px-6 py-2.5 rounded-full text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 shadow-lg hover:bg-gold transition-colors"
-              >
-                <Plus size={16} /> Add relative
+          <div className="heritage-hero-actions grid w-full grid-cols-2 items-center gap-2 lg:flex lg:max-w-lg lg:justify-center">
+            {currentUserMemberId && (
+              <button type="button" onClick={() => setLocationSheetOpen(true)} className="flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-xl border border-sepia bg-sand/40 px-3 text-sm font-semibold text-ink lg:hidden" aria-label="Location sharing settings">
+                <LocateFixed size={18} /><span>Location</span>
               </button>
             )}
-            <div className="relative flex-1 max-w-xs">
-              <input 
-                type="text" 
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search ancestors..."
-                className="bg-sand border border-sepia rounded-full px-10 py-2.5 text-xs w-full focus:outline-none focus:ring-1 focus:ring-gold"
-              />
-              <Search className="absolute left-3.5 top-3 text-ink/30" size={14} />
-              {searchQuery && (
-                <button onClick={() => setSearchQuery('')} className="absolute right-3.5 top-3 text-ink/40">
-                  <X size={14} />
-                </button>
-              )}
+            {canAdministerFamily && (
+              <button type="button" onClick={() => setAddModalOpen(true)} disabled={!members.length || saving} aria-label="Add relative" className="flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-xl bg-ink px-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-gold-ink disabled:opacity-40 lg:rounded-full lg:px-6">
+                <Plus size={18} /><span>Add relative</span>
+              </button>
+            )}
+            <div className="relative hidden flex-1 lg:block lg:max-w-xs">
+              <label htmlFor="heritage-search" className="sr-only">Search family tree</label>
+              <input id="heritage-search" type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search family tree" className="min-h-11 w-full rounded-full border border-sepia bg-sand px-10 text-base focus:outline-none focus:ring-2 focus:ring-gold-ink" />
+              <Search className="absolute left-3.5 top-3.5 text-ink/30" size={16} />
             </div>
           </div>
-        </div>
-        <div className="absolute -bottom-10 -right-10 text-gold opacity-5 rotate-12 -z-0 pointer-events-none">
-          <Users size={220} />
         </div>
       </section>
 
       {mutationError && (
-        <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 flex items-start justify-between gap-4">
+        <div role="alert" className="flex shrink-0 items-start justify-between gap-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           <span>{mutationError}</span>
-          <button type="button" onClick={() => setMutationError('')} aria-label="Dismiss error"><X size={16} /></button>
+          <button type="button" onClick={() => setMutationError('')} aria-label="Dismiss error" className="flex size-11 shrink-0 items-center justify-center rounded-full"><X size={18} /></button>
         </div>
       )}
 
       {currentUserMemberId && (
-        <section className="bg-white border border-sepia rounded-[2rem] p-6 shadow-sm" aria-labelledby="location-sharing-heading">
-          <div className="flex flex-col lg:flex-row lg:items-start gap-6">
+        <section className="hidden rounded-[2rem] border border-sepia bg-white p-6 shadow-sm lg:block" aria-labelledby="location-sharing-heading">
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
             <div className="flex-1">
               <div className="flex items-center gap-2">
                 <LocateFixed size={18} className="text-gold" />
-                <h4 id="location-sharing-heading" className="font-serif italic text-xl">Share my location once</h4>
+                <h4 id="location-sharing-heading" className="font-serif text-xl italic">Share my location once</h4>
               </div>
-              <p className="text-xs text-ink/55 mt-2 leading-relaxed max-w-xl">
+              <p className="mt-2 max-w-xl text-sm leading-relaxed text-ink/55">
                 This runs only when you press the button. It does not track you in the background. Non-exact coordinates are rounded before storage; the family map and AI receive only an authorized area or coarse distance summary.
               </p>
               {members.find(member => member.id === currentUserMemberId)?.safeLocation && (
-                <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700">
-                  <MapPin size={12} />
+                <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
+                  <MapPin size={14} />
                   {(() => {
                     const location = members.find(member => member.id === currentUserMemberId)?.safeLocation;
                     return location?.city || location?.emirate || location?.distanceBand || 'Location summary shared';
@@ -666,86 +951,96 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
                 </div>
               )}
             </div>
-            <div className="w-full lg:w-[360px] space-y-3">
-              <div className="grid grid-cols-3 gap-3">
-                <label className="text-[9px] uppercase tracking-wider font-bold text-ink/60">
-                  Precision
-                  <select value={locationPrecision} onChange={event => setLocationPrecision(event.target.value as LocationPrecision)} className="mt-1 w-full rounded-xl border border-sepia bg-sand/30 px-3 py-2 text-xs normal-case tracking-normal text-ink">
-                    <option value="approximate">Approximate area</option>
-                    <option value="city">City-level</option>
-                    <option value="exact">Exact (private storage)</option>
-                  </select>
-                </label>
-                <label className="text-[9px] uppercase tracking-wider font-bold text-ink/60">
-                  Visible to
-                  <select value={locationVisibility} onChange={event => setLocationVisibility(event.target.value as LocationVisibility)} className="mt-1 w-full rounded-xl border border-sepia bg-sand/30 px-3 py-2 text-xs normal-case tracking-normal text-ink">
-                    <option value="private">Only me</option>
-                    <option value="family_admin">Family admins</option>
-                    <option value="family">Family</option>
-                  </select>
-                </label>
-                <label className="text-[9px] uppercase tracking-wider font-bold text-ink/60">
-                  Expires
-                  <select value={locationExpiryHours} onChange={event => setLocationExpiryHours(event.target.value)} className="mt-1 w-full rounded-xl border border-sepia bg-sand/30 px-3 py-2 text-xs normal-case tracking-normal text-ink">
-                    <option value="24">24 hours</option>
-                    <option value="168">7 days</option>
-                    <option value="720">30 days</option>
-                    <option value="">Until replaced</option>
-                  </select>
-                </label>
-              </div>
-              <label className="flex items-start gap-2 text-[11px] text-ink/65 leading-relaxed">
-                <input type="checkbox" checked={locationConsent} onChange={event => setLocationConsent(event.target.checked)} className="mt-0.5 accent-[#C5A059]" />
-                I consent to this one-time location request and the selected visibility.
-              </label>
-              <button type="button" onClick={handleShareMyLocation} disabled={!locationConsent || locating} className="w-full bg-ink text-white rounded-xl py-2.5 text-[9px] uppercase tracking-widest font-bold flex items-center justify-center gap-2 hover:bg-gold disabled:opacity-40">
-                {locating ? <LoaderCircle size={14} className="animate-spin" /> : <LocateFixed size={14} />}
-                {locating ? 'Requesting permission' : 'Request and save location'}
-              </button>
-              {members.find(member => member.id === currentUserMemberId)?.safeLocation && (
-                <button type="button" onClick={handleRevokeMyLocation} disabled={locating} className="w-full rounded-xl border border-red-200 bg-red-50 py-2.5 text-[9px] font-bold uppercase tracking-widest text-red-700 hover:bg-red-100 disabled:opacity-40">
-                  Revoke consent & delete location
-                </button>
-              )}
-              {locationStatus && <p role="status" className="text-[11px] text-emerald-700">{locationStatus}</p>}
-              {locationError && <p role="alert" className="text-[11px] text-red-600">{locationError}</p>}
-            </div>
+            <div className="w-full lg:w-[420px]">{renderLocationControls('desktop-location')}</div>
           </div>
         </section>
       )}
 
       {/* Interactive Tree Canvas */}
-      <div 
-        className="relative min-h-[500px] h-[600px] bg-[#FCFAF8] rounded-[2.5rem] border border-sepia overflow-hidden shadow-inner cursor-grab active:cursor-grabbing"
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
+      <section
+        ref={treePanelRef}
+        aria-label="Interactive family tree"
+        className={cn(
+          'heritage-tree-panel relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-sepia bg-[#FCFAF8] shadow-inner lg:h-[600px] lg:flex-none lg:rounded-[2.5rem]',
+          isFullscreen && 'fixed inset-0 z-[70] h-[100dvh] rounded-none border-0 pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]'
+        )}
       >
-        <div 
-          className="absolute inset-0 transition-transform duration-75 ease-out origin-center"
-          style={{ transform: `translate(${pan.x}px, ${pan.y}px)` }}
+        <div role="toolbar" className={cn('heritage-tree-toolbar sticky top-0 z-30 flex shrink-0 flex-col gap-1 border-b border-sepia bg-white/95 px-2 py-1 backdrop-blur-md lg:flex-row lg:items-center', isFullscreen && 'pt-[env(safe-area-inset-top)]')} aria-label="Tree controls">
+          <div role="group" aria-label="Tree navigation and zoom" className="heritage-navigation-group flex w-full items-center justify-between gap-0.5 lg:w-auto lg:justify-start">
+            <button type="button" onClick={fitTree} className="flex min-h-11 shrink-0 items-center gap-1 rounded-xl px-2 text-xs font-semibold text-ink hover:bg-sand focus-visible:outline-2 focus-visible:outline-gold-ink" aria-label="Fit entire tree"><Crosshair size={17} /> Fit</button>
+            <button type="button" onClick={() => currentUserMemberId && handleFocusMember(currentUserMemberId)} disabled={!currentUserMemberId} className="flex min-h-11 shrink-0 items-center gap-1 rounded-xl px-2 text-xs font-semibold text-ink hover:bg-sand disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-gold-ink" aria-label="Focus on me"><UserCircle size={17} /> Me</button>
+            <button type="button" onClick={() => handleZoom(1.18)} className="flex size-11 shrink-0 items-center justify-center rounded-xl text-ink hover:bg-sand focus-visible:outline-2 focus-visible:outline-gold-ink" aria-label="Zoom in"><ZoomIn size={19} /></button>
+            <button type="button" onClick={() => handleZoom(0.84)} className="flex size-11 shrink-0 items-center justify-center rounded-xl text-ink hover:bg-sand focus-visible:outline-2 focus-visible:outline-gold-ink" aria-label="Zoom out"><ZoomOut size={19} /></button>
+            <button type="button" onClick={resetTree} className="flex size-11 shrink-0 items-center justify-center rounded-xl text-ink hover:bg-sand focus-visible:outline-2 focus-visible:outline-gold-ink" aria-label="Reset tree view"><RotateCcw size={18} /></button>
+            <button type="button" onClick={handleFullscreen} className="flex size-11 shrink-0 items-center justify-center rounded-xl text-ink hover:bg-sand focus-visible:outline-2 focus-visible:outline-gold-ink" aria-label={isFullscreen ? 'Exit full screen' : 'Open full screen'} aria-pressed={isFullscreen}>
+              {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+            </button>
+          </div>
+          <div className="heritage-toolbar-secondary flex w-full min-w-0 items-center gap-1 lg:ml-auto lg:w-auto">
+            <div role="group" className="flex shrink-0 rounded-xl border border-sepia bg-sand/50 p-0.5" aria-label="Heritage view">
+              <button type="button" onClick={() => setViewMode('tree')} aria-pressed={viewMode === 'tree'} className={cn('flex min-h-11 items-center gap-1 rounded-[0.6rem] px-2.5 text-xs font-semibold', viewMode === 'tree' ? 'bg-white text-ink shadow-sm' : 'text-ink/55')}><Network size={16} /> Tree</button>
+              <button type="button" onClick={() => setViewMode('list')} aria-pressed={viewMode === 'list'} className={cn('flex min-h-11 items-center gap-1 rounded-[0.6rem] px-2.5 text-xs font-semibold', viewMode === 'list' ? 'bg-white text-ink shadow-sm' : 'text-ink/55')}><List size={16} /> List</button>
+            </div>
+            <div className="heritage-landscape-actions hidden shrink-0 items-center gap-0.5" aria-label="Heritage actions">
+              {currentUserMemberId && (
+                <button type="button" onClick={() => setLocationSheetOpen(true)} className="flex size-11 items-center justify-center rounded-xl text-ink hover:bg-sand" aria-label="Location sharing settings"><LocateFixed size={18} /></button>
+              )}
+              {canAdministerFamily && (
+                <button type="button" onClick={() => setAddModalOpen(true)} disabled={!members.length || saving} className="flex size-11 items-center justify-center rounded-xl text-ink hover:bg-sand disabled:opacity-40" aria-label="Add relative"><Plus size={18} /></button>
+              )}
+              {focusedMember && (
+                <button type="button" onClick={() => setSelectedPerson(focusedMember)} className="flex size-11 items-center justify-center rounded-xl text-ink hover:bg-sand" aria-label={`View ${focusedMember.name} profile`}><Info size={18} /></button>
+              )}
+            </div>
+            <div className="heritage-mobile-search relative min-w-0 flex-1 lg:hidden">
+              <label htmlFor="mobile-heritage-search" className="sr-only">Search family tree</label>
+              <Search className="pointer-events-none absolute left-3 top-3.5 text-ink/35" size={16} />
+              <input id="mobile-heritage-search" type="search" value={searchQuery} onChange={event => setSearchQuery(event.target.value)} placeholder="Search family" className="min-h-11 w-full rounded-xl border border-sepia bg-sand/40 pl-9 pr-2 text-base text-ink outline-none focus:ring-2 focus:ring-gold-ink" />
+            </div>
+          </div>
+        </div>
+
+        {viewMode === 'tree' ? (
+        <div
+          ref={canvasRef}
+          data-testid="heritage-tree-canvas"
+          data-tree-scale={scale.toFixed(3)}
+          className={cn('relative min-h-0 flex-1 touch-none select-none overflow-hidden overscroll-none bg-[radial-gradient(circle_at_center,rgba(197,160,89,0.08),transparent_62%)]', isDragging ? 'cursor-grabbing' : 'cursor-grab')}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerEnd}
+          onPointerCancel={handlePointerEnd}
+          onLostPointerCapture={handlePointerEnd}
+          onWheel={handleWheel}
+          onDoubleClick={() => focusedMember && centerOnMember(focusedMember.id, Math.max(0.9, scaleRef.current))}
+          aria-label="Family tree canvas. Drag to pan, pinch or use controls to zoom, and tap a person to focus."
         >
-          {/* Centering wrapper: puts (0,0) of the tree at the visual center of the canvas initially */}
-          <div className="absolute top-1/2 left-1/2 w-0 h-0">
+          {layoutNodes.length === 0 ? (
+            <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-sm text-ink/55">Add a relative to begin your family tree.</div>
+          ) : (
+          <div className={cn('absolute left-1/2 top-1/2 size-0 origin-center motion-reduce:transition-none', isDragging ? '' : 'transition-transform duration-300 ease-out')} style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})` }}>
             {/* SVG Lines */}
-            <svg className="absolute overflow-visible pointer-events-none" style={{ top: 0, left: 0 }}>
+            <svg aria-hidden="true" className="absolute overflow-visible pointer-events-none" style={{ top: 0, left: 0 }}>
               {connectionLines.map(line => (
                 <path 
                   key={line.id}
+                  data-tree-connector="true"
                   d={
                     line.type === 'parent-child' 
-                      ? `M ${line.x1} ${line.y1 + (line.fromHeart ? 12 : 45)} L ${line.x1} ${(line.y1 + line.y2) / 2 + (line.routeOffset || 0)} L ${line.x2} ${(line.y1 + line.y2) / 2 + (line.routeOffset || 0)} L ${line.x2} ${line.y2 - 45}`
+                      ? `M ${line.x1} ${line.y1 + (line.fromHeart ? 12 : 38)} L ${line.x1} ${(line.y1 + line.y2) / 2 + (line.routeOffset || 0)} L ${line.x2} ${(line.y1 + line.y2) / 2 + (line.routeOffset || 0)} L ${line.x2} ${line.y2 - 38}`
                       : line.type === 'sibling-hub'
-                        ? `M ${line.x1} ${line.y1 + 12} L ${line.x1} ${(line.y1 + line.y2) / 2} L ${line.x2} ${(line.y1 + line.y2) / 2} L ${line.x2} ${line.y2 - 45}`
+                        ? `M ${line.x1} ${line.y1 + 10} L ${line.x1} ${(line.y1 + line.y2) / 2} L ${line.x2} ${(line.y1 + line.y2) / 2} L ${line.x2} ${line.y2 - 38}`
                         : line.curve
-                          ? `M ${line.x1 + 45} ${line.y1} C ${line.x1 + 170} ${line.y1 + line.curve} ${(line.heartX || line.x2) - 170} ${line.y1 + line.curve} ${line.heartX || line.x2} ${line.heartY || line.y2} L ${line.x2 - 45} ${line.y2}`
-                          : `M ${line.x1 + 45} ${line.y1} L ${line.x2 - 45} ${line.y2}`
+                          ? `M ${line.x1 + 38} ${line.y1} C ${line.x1 + 140} ${line.y1 + line.curve} ${(line.heartX || line.x2) - 140} ${line.y1 + line.curve} ${line.heartX || line.x2} ${line.heartY || line.y2} L ${line.x2 - 38} ${line.y2}`
+                          : `M ${line.x1 + 38} ${line.y1} L ${line.x2 - 38} ${line.y2}`
                   }
                   fill="none"
-                  stroke="#a8a29e"
-                  strokeWidth="1.5"
+                  stroke={line.type === 'spouse' ? '#C5A059' : '#a8a29e'}
+                  strokeWidth={line.type === 'spouse' ? 2 : 1.5}
                   strokeDasharray={line.type === 'relative' ? '6 5' : undefined}
+                  vectorEffect="non-scaling-stroke"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
                   className="opacity-70"
                 />
               ))}
@@ -755,89 +1050,218 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
             {connectionHearts.map(heart => (
               <div 
                 key={heart.id}
-                className="absolute -translate-x-1/2 -translate-y-1/2 bg-[#FCFAF8] px-2 text-ink/70"
+                className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 bg-[#FCFAF8] px-1.5 text-gold"
                 style={{ left: heart.x, top: heart.y }}
               >
-                <Heart size={12} fill="currentColor" stroke="none" />
+                <Heart size={11} fill="currentColor" stroke="none" />
               </div>
             ))}
 
             {/* Nodes */}
             {layoutNodes.map(node => {
-              const m = node.member;
-              const isMatch = searchQuery && (m.name.toLowerCase().includes(searchQuery.toLowerCase()) || m.relationship.toLowerCase().includes(searchQuery.toLowerCase()) || (m.familyBranch && m.familyBranch.toLowerCase().includes(searchQuery.toLowerCase())));
+              const member = node.member;
+              const isFocused = member.id === focusedMember?.id;
+              const isMatch = Boolean(searchQuery) && (member.name.toLowerCase().includes(searchQuery.toLowerCase()) || member.relationship.toLowerCase().includes(searchQuery.toLowerCase()) || Boolean(member.familyBranch?.toLowerCase().includes(searchQuery.toLowerCase())));
+              const relationshipLabel = relationshipLabelForFocus(
+                member.id,
+                focusedMember?.id || '',
+                relationshipGroups,
+                focusedMember?.id === currentUserMemberId ? member.relationship : 'Relative'
+              );
               return (
-                <div 
-                  key={m.id}
-                  onClick={(e) => { e.stopPropagation(); setSelectedPerson(m); }}
+                <div
+                  aria-hidden="true"
+                  key={member.id}
                   className={cn(
-                    "absolute -translate-x-1/2 -translate-y-1/2 cursor-pointer transition-all flex flex-col items-center gap-2",
-                    isMatch ? "scale-110 z-10 drop-shadow-[0_0_15px_rgba(212,175,55,0.4)]" : "z-0 hover:scale-105"
+                    'pointer-events-none absolute flex w-[116px] -translate-x-1/2 -translate-y-1/2 flex-col items-center rounded-2xl border bg-white/95 px-2 py-2 text-center shadow-md backdrop-blur-sm',
+                    isFocused ? 'z-10 border-gold ring-4 ring-gold/15' : 'z-0 border-sepia',
+                    isMatch && 'z-20 ring-4 ring-gold/30'
                   )}
                   style={{ left: node.x * X_SPACING, top: node.y * Y_SPACING }}
                 >
-                  <img src={m.photo || createAnonymousAvatar(m.id)} alt={m.name} className="size-20 min-w-20 min-h-20 shrink-0 rounded-full object-cover overflow-hidden shadow-lg pointer-events-none border border-sepia/20" />
-                  <div className="text-center pointer-events-none pt-1 bg-[#FCFAF8]/80 backdrop-blur-sm rounded-xl px-2">
-                    <h5 className="text-[22px] font-serif italic text-ink leading-tight tracking-wide whitespace-nowrap">{m.name}</h5>
-                    <span className="text-[8px] uppercase tracking-[0.2em] text-ink/60 mt-0.5 block">{m.relationship === 'Me' ? 'Main' : m.relationship}</span>
-                  </div>
+                  <img src={member.photo || createAnonymousAvatar(member.id)} alt="" className="pointer-events-none size-12 shrink-0 rounded-full border border-sepia/30 bg-white object-cover shadow-sm" />
+                  <span className={cn('mt-1.5 block w-full truncate font-serif text-base font-semibold italic leading-tight text-ink', scale < 0.78 && 'invisible')} title={member.name}>{member.name}</span>
+                  <span className={cn('mt-0.5 block w-full truncate text-xs font-semibold text-ink/55', scale < 0.78 && 'invisible')}>{relationshipLabel}</span>
                 </div>
               );
             })}
           </div>
+          )}
+
+          {layoutNodes.length > 0 && layoutNodes.map(node => {
+            const member = node.member;
+            const isFocused = member.id === focusedMember?.id;
+            const relationshipLabel = relationshipLabelForFocus(
+              member.id,
+              focusedMember?.id || '',
+              relationshipGroups,
+              focusedMember?.id === currentUserMemberId ? member.relationship : 'Relative'
+            );
+            const screenX = pan.x + node.x * X_SPACING * scale;
+            const screenY = pan.y + node.y * Y_SPACING * scale;
+            const screenLabelWidth = Math.max(52, Math.min(88, X_SPACING * scale - 8));
+
+            return (
+              <button
+                type="button"
+                key={`hit-${member.id}`}
+                data-testid="heritage-node-hit-target"
+                data-member-id={member.id}
+                onPointerDown={event => event.stopPropagation()}
+                onClick={() => handleFocusMember(member.id)}
+                onDoubleClick={(event) => { event.stopPropagation(); setSelectedPerson(member); }}
+                className={cn(
+                  'pointer-events-auto absolute left-1/2 top-1/2 z-10 flex size-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-xl bg-transparent transition-[left,top] duration-300 ease-out motion-reduce:transition-none focus-visible:z-30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold-ink',
+                  isDragging && 'transition-none',
+                  isFocused && 'z-20'
+                )}
+                style={{
+                  left: `calc(50% + ${screenX}px)`,
+                  top: `calc(50% + ${screenY}px)`,
+                  minWidth: 44,
+                  minHeight: 44
+                }}
+                aria-label={`${member.name}, ${relationshipLabel}. Tap to focus; double tap for profile.`}
+                aria-pressed={isFocused}
+              >
+                {scale < 0.78 && (
+                  <span
+                    data-testid="heritage-node-screen-label"
+                    aria-hidden="true"
+                    className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-md bg-white/90 px-1 py-0.5 text-center shadow-sm backdrop-blur-sm"
+                    style={{ width: screenLabelWidth }}
+                  >
+                    <span className="block truncate text-[11px] font-semibold leading-tight text-ink">{member.name}</span>
+                    <span className="block truncate text-[10px] font-semibold leading-tight text-ink/60">{relationshipLabel}</span>
+                  </span>
+                )}
+              </button>
+            );
+          })}
+
+          {focusedMember && (
+            <div className="heritage-focus-card absolute bottom-3 left-3 right-3 z-30 flex items-center gap-2 rounded-2xl border border-sepia bg-white/95 p-2 shadow-lg backdrop-blur lg:left-auto lg:w-[300px]">
+              <img src={focusedMember.photo || createAnonymousAvatar(focusedMember.id)} alt="" className="size-10 rounded-full object-cover" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-ink">{focusedMember.name}</p>
+                <p className="text-xs text-ink/50">Focused person</p>
+              </div>
+              <button type="button" onClick={() => setSelectedPerson(focusedMember)} className="flex min-h-11 items-center gap-1.5 rounded-xl border border-sepia px-3 text-xs font-semibold text-ink" aria-label={`View ${focusedMember.name} profile`}><Info size={16} /> Details</button>
+            </div>
+          )}
         </div>
-      </div>
+        ) : (
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 pb-[calc(1rem+env(safe-area-inset-bottom))] lg:p-6" data-testid="heritage-list-view">
+            {focusedMember && (
+              <div className="mb-4 flex items-center gap-3 rounded-2xl border border-gold/30 bg-gold/10 p-3">
+                <img src={focusedMember.photo || createAnonymousAvatar(focusedMember.id)} alt="" className="size-12 rounded-full object-cover" />
+                <div className="min-w-0"><p className="truncate font-serif text-lg font-semibold italic">{focusedMember.name}</p><p className="text-xs text-ink/55">Focused person</p></div>
+              </div>
+            )}
+            <div className="space-y-5">
+              {([
+                ['Parents', relationshipGroups.parents],
+                ['Partner / spouse', relationshipGroups.partners],
+                ['Siblings', relationshipGroups.siblings],
+                ['Children', relationshipGroups.children],
+                ['Other relatives', relationshipGroups.others]
+              ] as const).map(([heading, group]) => (
+                <section key={heading} aria-labelledby={`heritage-${heading.toLowerCase().replace(/[^a-z]+/g, '-')}`}>
+                  <h4 id={`heritage-${heading.toLowerCase().replace(/[^a-z]+/g, '-')}`} className="mb-2 text-sm font-semibold text-ink/55">{heading} <span className="font-normal">({group.length})</span></h4>
+                  {group.length ? (
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {group.map(member => (
+                        <button type="button" key={member.id} onClick={() => handleFocusMember(member.id)} className="flex min-h-14 w-full items-center gap-3 rounded-2xl border border-sepia bg-white p-2.5 text-left transition-colors hover:border-gold focus-visible:outline-2 focus-visible:outline-gold-ink" aria-label={`Focus on ${member.name} in tree`}>
+                          <img src={member.photo || createAnonymousAvatar(member.id)} alt="" className="size-11 shrink-0 rounded-full object-cover" />
+                          <span className="min-w-0"><span className="block truncate text-sm font-semibold text-ink" title={member.name}>{member.name}</span><span className="block text-xs text-ink/50">Tap to focus in Tree view</span></span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : <p className="rounded-xl border border-dashed border-sepia px-3 py-2 text-xs text-ink/45">No {heading.toLowerCase()} linked.</p>}
+                </section>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
 
       {/* Heritage Tip — outside tree area */}
-      <div className="bg-white/95 backdrop-blur-md p-5 rounded-3xl border border-gold/15 shadow-lg">
-        <div className="flex items-center gap-2 mb-2">
-          <Heart size={12} className="text-gold" />
-          <span className="text-[10px] font-bold text-ink uppercase tracking-widest">Heritage Tip</span>
-        </div>
-        <p className="text-[11px] text-ink/60 leading-relaxed italic font-serif">
-          "Preserve traditions by letting younger family members register local stories inside the family tree memories list."
-        </p>
+      <div className="hidden rounded-3xl border border-gold/15 bg-white/95 p-5 shadow-lg backdrop-blur-md lg:block">
+        <div className="mb-2 flex items-center gap-2"><Heart size={12} className="text-gold" /><span className="text-xs font-bold text-ink">Heritage tip</span></div>
+        <p className="text-sm font-serif italic leading-relaxed text-ink/60">Preserve traditions by letting younger family members register local stories inside the family tree memories list.</p>
       </div>
 
-      <p className="flex items-center justify-center gap-3 py-6 text-[10px] font-bold uppercase tracking-[0.2em] text-ink/45">
-        <Share2 size={16} /> Select relatives for private invitations in Gatherings
-      </p>
+      <p className="hidden items-center justify-center gap-3 py-6 text-xs font-semibold text-ink/45 lg:flex"><Share2 size={16} /> Select relatives for private invitations in Gatherings</p>
+
+      <AnimatePresence>
+        {locationSheetOpen && currentUserMemberId && (
+          <div className="fixed inset-0 z-[80] flex items-end bg-ink/45 backdrop-blur-sm lg:hidden" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setLocationSheetOpen(false); }}>
+            <motion.section
+              ref={locationDialogRef}
+              tabIndex={-1}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="mobile-location-heading"
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ duration: prefersReducedMotion ? 0 : 0.2 }}
+              className="max-h-[92dvh] w-full overflow-y-auto rounded-t-[2rem] bg-white px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-3 shadow-2xl motion-reduce:transition-none"
+            >
+              <div className="sticky top-0 z-10 -mx-4 mb-4 flex min-h-14 items-center justify-between border-b border-sepia bg-white px-4">
+                <div><h4 id="mobile-location-heading" className="font-serif text-xl font-semibold italic">Location sharing</h4><p className="text-xs text-ink/50">One-time and privacy controlled</p></div>
+                <button type="button" onClick={() => setLocationSheetOpen(false)} className="flex size-11 items-center justify-center rounded-full" aria-label="Close location sharing"><X size={20} /></button>
+              </div>
+              <p className="mb-4 text-sm leading-relaxed text-ink/60">Your device location is requested only when you confirm below. It is never background tracking.</p>
+              {renderLocationControls('mobile-location')}
+            </motion.section>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Add Relative Modal */}
       <AnimatePresence>
         {addModalOpen && canAdministerFamily && (
-          <div className="fixed inset-0 bg-ink/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-[80] flex items-end bg-ink/40 backdrop-blur-sm md:items-center md:justify-center md:p-4">
             <motion.div 
+              ref={addDialogRef}
+              tabIndex={-1}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="add-relative-heading"
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white w-full max-w-md rounded-[2.5rem] border border-sepia overflow-hidden shadow-2xl flex flex-col max-h-[85vh]"
+              transition={{ duration: prefersReducedMotion ? 0 : 0.2 }}
+              className="flex max-h-[100dvh] w-full max-w-md flex-col overflow-hidden rounded-t-[2rem] border border-sepia bg-white pb-[env(safe-area-inset-bottom)] shadow-2xl md:max-h-[85dvh] md:rounded-[2.5rem]"
             >
-              <form onSubmit={handleAddMemberSubmit}>
+              <form onSubmit={handleAddMemberSubmit} className="flex min-h-0 flex-1 flex-col">
                 <input
                   ref={addPhotoInputRef}
                   type="file"
                   accept="image/*"
                   onChange={handleAddPhotoFile}
+                  hidden
                   className="hidden"
                 />
                 {/* Header */}
-                <div className="bg-sand p-6 flex justify-between items-center border-b border-sepia">
+                <div className="flex min-h-16 shrink-0 items-center justify-between border-b border-sepia bg-sand px-4 py-3 md:p-6">
                   <div className="flex items-center gap-2">
                     <UserPlus size={18} className="text-gold" />
-                    <h3 className="font-serif text-xl text-ink font-bold italic">Add Relative to Tree</h3>
+                    <h3 id="add-relative-heading" className="font-serif text-xl text-ink font-bold italic">Add relative to tree</h3>
                   </div>
                   <button 
                     type="button" 
                     onClick={() => setAddModalOpen(false)}
-                    className="p-1 rounded-full hover:bg-sepia/20 transition-colors"
+                    className="flex size-11 items-center justify-center rounded-full hover:bg-sepia/20 transition-colors"
+                    aria-label="Close add relative"
                   >
                     <X size={20} />
                   </button>
                 </div>
 
                 {/* Form Fields */}
-                <div className="p-6 space-y-4 overflow-y-auto max-h-[55vh] custom-scrollbar text-sm text-ink">
+                <div className="custom-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto p-4 text-sm text-ink md:p-6">
                   <PhotoPicker
                     photo={formPhoto}
                     fallbackSeed={formName || 'new-relative'}
@@ -848,24 +1272,26 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
 
                   {/* Name */}
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider block">Full Name</label>
+                    <label htmlFor="add-relative-name" className="block text-sm font-semibold">Full name</label>
                     <input 
+                      id="add-relative-name"
                       type="text"
                       required
                       value={formName}
                       onChange={(e) => setFormName(e.target.value)}
                       placeholder="e.g. Zayed Al Mansouri"
-                      className="w-full bg-sand/30 border border-sepia rounded-xl px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-gold"
+                      className="min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-4 text-base focus:outline-none focus:ring-2 focus:ring-gold-ink"
                     />
                   </div>
 
                   {/* Relationship To */}
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider block">Relationship To</label>
+                    <label htmlFor="add-relative-related-to" className="block text-sm font-semibold">Relationship to</label>
                     <select
+                      id="add-relative-related-to"
                       value={formRelatedToId}
                       onChange={(e) => setFormRelatedToId(e.target.value)}
-                      className="w-full bg-sand/30 border border-sepia rounded-xl px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-gold text-sm text-ink"
+                      className="min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-4 text-base text-ink focus:outline-none focus:ring-2 focus:ring-gold-ink md:text-sm"
                     >
                       {members.map(person => (
                         <option key={person.id} value={person.id}>{person.name} ({person.id === currentUserMemberId ? 'Me' : person.relationship})</option>
@@ -875,11 +1301,12 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
 
                   {/* Type of Link */}
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider block">Type of Link (Lineage Connection)</label>
+                    <label htmlFor="add-relative-link-type" className="block text-sm font-semibold">Type of link (lineage connection)</label>
                     <select
+                      id="add-relative-link-type"
                       value={formLinkType}
                       onChange={(e) => setFormLinkType(e.target.value as RelativeLinkType)}
-                      className="w-full bg-sand/30 border border-sepia rounded-xl px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-gold text-sm text-ink"
+                      className="min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-4 text-base text-ink focus:outline-none focus:ring-2 focus:ring-gold-ink md:text-sm"
                     >
                       <option value="Father">Father</option>
                       <option value="Mother">Mother</option>
@@ -893,11 +1320,12 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
 
                   {(formLinkType === 'Son' || formLinkType === 'Daughter') && formSpouseOptions.length > 0 && (
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider block">Other Parent</label>
+                      <label htmlFor="add-relative-co-parent" className="block text-sm font-semibold">Other parent</label>
                       <select
+                        id="add-relative-co-parent"
                         value={formCoParentId}
                         onChange={(e) => setFormCoParentId(e.target.value)}
-                        className="w-full bg-sand/30 border border-sepia rounded-xl px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-gold text-sm text-ink"
+                        className="min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-4 text-base text-ink focus:outline-none focus:ring-2 focus:ring-gold-ink md:text-sm"
                       >
                         <option value="">No second parent selected</option>
                         {formSpouseOptions.map(spouse => (
@@ -908,50 +1336,54 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
                   )}
 
                   {/* Birthday & Contact */}
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider block">Birthday Date</label>
+                      <label htmlFor="add-relative-birthday" className="block text-sm font-semibold">Birthday date</label>
                       <input 
+                        id="add-relative-birthday"
                         type="date"
                         value={formBirthday}
                         onChange={(e) => setFormBirthday(e.target.value)}
-                        className="w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2 focus:outline-none text-xs text-ink"
+                        className="min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-3 text-base text-ink focus:outline-none focus:ring-2 focus:ring-gold-ink"
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider block">Contact Information</label>
+                      <label htmlFor="add-relative-contact" className="block text-sm font-semibold">Contact information</label>
                       <input 
+                        id="add-relative-contact"
                         type="text"
                         value={formContact}
                         onChange={(e) => setFormContact(e.target.value)}
                         placeholder="+971 50..."
-                        className="w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2 focus:outline-none text-xs text-ink"
+                        className="min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-3 text-base text-ink focus:outline-none focus:ring-2 focus:ring-gold-ink"
                       />
                     </div>
                   </div>
 
                   {/* Approximate location & notes */}
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider block">Approximate Emirate</label>
+                      <label htmlFor="add-relative-emirate" className="block text-sm font-semibold">Approximate emirate</label>
                       <select
+                        id="add-relative-emirate"
                         value={formEmirate}
                         onChange={(e) => setFormEmirate(e.target.value)}
-                        className="w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2 focus:outline-none text-xs"
+                        className="min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-3 text-base focus:outline-none focus:ring-2 focus:ring-gold-ink"
                       >
                         <option value="">Not provided</option>
                         {['Abu Dhabi', 'Dubai', 'Sharjah', 'Ajman', 'Umm Al Quwain', 'Ras Al Khaimah', 'Fujairah'].map(emirate => <option key={emirate}>{emirate}</option>)}
                       </select>
-                      <p className="text-[9px] text-ink/40 leading-snug">Admin-reported area; not device tracking.</p>
+                      <p className="text-xs leading-snug text-ink/45">Admin-reported area; not device tracking.</p>
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider block">Primary Note</label>
+                      <label htmlFor="add-relative-note" className="block text-sm font-semibold">Primary note</label>
                       <input 
+                        id="add-relative-note"
                         type="text"
                         value={formNotes}
                         onChange={(e) => setFormNotes(e.target.value)}
                         placeholder="e.g. Traditional poetry reader"
-                        className="w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2 focus:outline-none text-xs"
+                        className="min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-3 text-base focus:outline-none focus:ring-2 focus:ring-gold-ink"
                       />
                     </div>
                   </div>
@@ -960,18 +1392,18 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
                 </div>
 
                 {/* Footer */}
-                <div className="p-6 bg-sand border-t border-sepia flex gap-4">
+                <div className="flex shrink-0 gap-3 border-t border-sepia bg-sand p-4 md:p-6">
                   <button 
                     type="submit"
                     disabled={saving}
-                    className="flex-1 bg-ink text-white py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest hover:bg-gold transition-colors text-center shadow disabled:opacity-50 flex items-center justify-center gap-2"
+                    className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-ink px-4 text-center text-sm font-semibold text-white shadow transition-colors hover:bg-gold-ink disabled:opacity-50"
                   >
-                    {saving && <LoaderCircle size={14} className="animate-spin" />} Add to Lineage
+                    {saving && <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" />} Add to lineage
                   </button>
                   <button 
                     type="button" 
                     onClick={() => setAddModalOpen(false)}
-                    className="px-6 bg-white border border-sepia text-ink/60 py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest hover:text-ink hover:border-gold transition-all"
+                    className="min-h-11 rounded-xl border border-sepia bg-white px-5 text-sm font-semibold text-ink/60 transition-all hover:border-gold hover:text-ink"
                   >
                     Cancel
                   </button>
@@ -985,42 +1417,51 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
       {/* Person Detail Drawer/Modal */}
       <AnimatePresence>
         {selectedPerson && (
-          <div className="fixed inset-0 bg-ink/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-[80] flex items-end bg-ink/40 backdrop-blur-sm md:items-center md:justify-center md:p-4">
             <motion.div 
+              ref={personDialogRef}
+              tabIndex={-1}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="person-profile-heading"
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white w-full max-w-md rounded-[2.5rem] border border-sepia overflow-hidden shadow-2xl flex flex-col"
+              transition={{ duration: prefersReducedMotion ? 0 : 0.2 }}
+              className="flex max-h-[100dvh] w-full max-w-md flex-col overflow-hidden rounded-t-[2rem] border border-sepia bg-white pb-[env(safe-area-inset-bottom)] shadow-2xl md:max-h-[88dvh] md:rounded-[2.5rem]"
             >
               <input
                 ref={editPhotoInputRef}
                 type="file"
                 accept="image/*"
                 onChange={handleEditPhotoFile}
+                hidden
                 className="hidden"
               />
               {/* Header */}
-              <div className="bg-sand p-6 flex justify-between items-start border-b border-sepia">
+              <div className="flex shrink-0 items-start justify-between border-b border-sepia bg-sand p-4 md:p-6">
                 <div className="flex items-center gap-4">
                   <img src={selectedPerson.photo || createAnonymousAvatar(selectedPerson.id)} alt={selectedPerson.name} className="size-14 min-w-14 min-h-14 shrink-0 rounded-full object-cover overflow-hidden border border-sepia p-0.5 bg-white shadow-sm" />
                   <div>
-                    <span className="text-[8px] uppercase tracking-widest text-gold font-bold">
+                    <span className="text-xs font-semibold text-gold-ink">
                       {selectedPerson.id === currentUserMemberId ? `Me (${familyRole})` : selectedPerson.relationship}
                     </span>
-                    <h3 className="font-serif text-xl text-ink font-bold italic leading-tight">{selectedPerson.name}</h3>
-                    <p className="text-[9px] text-ink/40 font-bold uppercase tracking-wider">Branch: {selectedPerson.familyBranch || 'Main'}</p>
+                    <h3 id="person-profile-heading" className="font-serif text-xl text-ink font-bold italic leading-tight">{selectedPerson.name}</h3>
+                    <p className="text-xs font-semibold text-ink/45">Branch: {selectedPerson.familyBranch || 'Main'}</p>
                   </div>
                 </div>
                 <button 
                   onClick={() => setSelectedPerson(null)}
-                  className="p-1 rounded-full hover:bg-sepia/20 transition-colors"
+                  type="button"
+                  className="flex size-11 shrink-0 items-center justify-center rounded-full hover:bg-sepia/20 transition-colors"
+                  aria-label="Close profile"
                 >
                   <X size={20} className="text-ink/60" />
                 </button>
               </div>
 
               {/* Body */}
-              <div className="p-6 space-y-6 text-sm text-ink max-h-[50vh] overflow-y-auto custom-scrollbar">
+              <div className="custom-scrollbar min-h-0 flex-1 space-y-6 overflow-y-auto p-4 text-sm text-ink md:p-6">
                 <PhotoPicker
                   photo={selectedPerson.photo}
                   fallbackSeed={selectedPerson.id}
@@ -1032,58 +1473,58 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
                 {/* Persistent profile fields */}
                 {(canAdministerFamily || selectedPerson.id === currentUserMemberId) ? (
                 <div className="space-y-3">
-                  <label className="block text-[9px] font-bold uppercase tracking-wider text-ink/50">
+                  <label className="block text-sm font-semibold text-ink/60">
                     Full name
-                    <input required value={editName} onChange={event => setEditName(event.target.value)} className="mt-1 w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2.5 text-xs normal-case tracking-normal text-ink" />
+                    <input required value={editName} onChange={event => setEditName(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-3 text-base text-ink" />
                   </label>
-                  <div className="grid grid-cols-2 gap-3">
-                    <label className="block text-[9px] font-bold uppercase tracking-wider text-ink/50">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <label className="block text-sm font-semibold text-ink/60">
                       <span className="flex items-center gap-1"><Calendar size={12} className="text-gold" /> Birthday</span>
-                      <input type="date" value={editBirthday} onChange={event => setEditBirthday(event.target.value)} className="mt-1 w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2.5 text-xs normal-case tracking-normal text-ink" />
+                      <input type="date" value={editBirthday} onChange={event => setEditBirthday(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-3 text-base text-ink" />
                     </label>
-                    <label className="block text-[9px] font-bold uppercase tracking-wider text-ink/50">
+                    <label className="block text-sm font-semibold text-ink/60">
                       <span className="flex items-center gap-1"><Phone size={12} className="text-gold" /> Phone</span>
-                      <input value={editPhone} onChange={event => setEditPhone(event.target.value)} className="mt-1 w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2.5 text-xs normal-case tracking-normal text-ink" placeholder="+971 50…" />
+                      <input value={editPhone} onChange={event => setEditPhone(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-3 text-base text-ink" placeholder="+971 50…" />
                     </label>
                   </div>
-                  <label className="block text-[9px] font-bold uppercase tracking-wider text-ink/50">
+                  <label className="block text-sm font-semibold text-ink/60">
                     Email
-                    <input type="email" value={editEmail} onChange={event => setEditEmail(event.target.value)} className="mt-1 w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2.5 text-xs normal-case tracking-normal text-ink" placeholder="Optional" />
+                    <input type="email" value={editEmail} onChange={event => setEditEmail(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-sepia bg-sand/30 px-3 text-base text-ink" placeholder="Optional" />
                   </label>
-                  <label className="block text-[9px] font-bold uppercase tracking-wider text-ink/50">
+                  <label className="block text-sm font-semibold text-ink/60">
                     Notes
-                    <textarea rows={3} value={editNotes} onChange={event => setEditNotes(event.target.value)} className="mt-1 w-full bg-sand/30 border border-sepia rounded-xl px-3 py-2.5 text-xs normal-case tracking-normal text-ink resize-none" placeholder="Family context or accessibility needs" />
+                    <textarea rows={3} value={editNotes} onChange={event => setEditNotes(event.target.value)} className="mt-1 w-full resize-none rounded-xl border border-sepia bg-sand/30 px-3 py-2.5 text-base text-ink" placeholder="Family context or accessibility needs" />
                   </label>
                 </div>
                 ) : (
-                  <p className="rounded-xl border border-sepia/50 bg-sand/30 p-4 text-xs text-ink/55">
+                  <p className="rounded-xl border border-sepia/50 bg-sand/30 p-4 text-sm text-ink/55">
                     Private contact, birthday, and notes fields are visible only to that person and family administrators.
                   </p>
                 )}
 
                 {/* Lineage Info */}
                 <div className="bg-sand/30 border border-sepia/50 p-4 rounded-xl space-y-2">
-                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-ink/40">Heritage Lineage</h4>
-                  <p className="text-xs">
+                  <h4 className="text-sm font-semibold text-ink/50">Heritage lineage</h4>
+                  <p className="text-sm">
                     <strong>Parents: </strong> 
                     {selectedPerson.parentIds && selectedPerson.parentIds.length > 0 
                       ? members.filter(p => selectedPerson.parentIds?.includes(p.id)).map(p => p.name).join(', ') 
                       : 'Eldest Ancestor (No registered parents)'}
                   </p>
                   {getSpouseIds(selectedPerson).length > 0 && (
-                    <p className="text-xs">
+                    <p className="text-sm">
                       <strong>Spouse: </strong> 
                       {members.filter(p => getSpouseIds(selectedPerson).includes(p.id)).map(p => p.name).join(', ') || 'Linked Spouse'}
                     </p>
                   )}
                   {selectedPerson.childrenIds && selectedPerson.childrenIds.length > 0 && (
-                    <p className="text-xs">
+                    <p className="text-sm">
                       <strong>Children: </strong> 
                       {members.filter(p => selectedPerson.childrenIds?.includes(p.id)).map(p => p.name).join(', ')}
                     </p>
                   )}
                   {selectedPerson.siblingIds && selectedPerson.siblingIds.length > 0 && (
-                    <p className="text-xs">
+                    <p className="text-sm">
                       <strong>Siblings: </strong>
                       {members.filter(p => selectedPerson.siblingIds?.includes(p.id)).map(p => p.name).join(', ')}
                     </p>
@@ -1094,8 +1535,8 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
                   <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl flex items-start gap-3">
                     <ShieldCheck size={16} className="text-emerald-700 shrink-0" />
                     <div>
-                      <h4 className="text-[9px] font-bold uppercase tracking-wider text-emerald-800">Privacy-filtered location</h4>
-                      <p className="text-xs text-emerald-800/75 mt-1">
+                      <h4 className="text-sm font-semibold text-emerald-800">Privacy-filtered location</h4>
+                      <p className="mt-1 text-sm text-emerald-800/75">
                         {selectedPerson.safeLocation.city || selectedPerson.safeLocation.emirate || selectedPerson.safeLocation.distanceBand || 'A location summary is available to authorized viewers.'}
                       </p>
                     </div>
@@ -1103,23 +1544,23 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
                 )}
 
                 <div className="bg-sand/20 border border-sepia/50 p-4 rounded-xl">
-                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-ink/40 flex items-center gap-1.5"><Sparkles size={12} className="text-gold" /> Memories</h4>
-                  <p className="text-xs text-ink/50 mt-2">Family memories are saved with explicit privacy controls in the Archive and attached to persisted gatherings.</p>
+                  <h4 className="flex items-center gap-1.5 text-sm font-semibold text-ink/50"><Sparkles size={14} className="text-gold" /> Memories</h4>
+                  <p className="mt-2 text-sm text-ink/50">Family memories are saved with explicit privacy controls in the Archive and attached to persisted gatherings.</p>
                 </div>
 
                 {mutationError && <p role="alert" className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">{mutationError}</p>}
               </div>
 
               {/* Footer */}
-              <div className="p-6 bg-sand border-t border-sepia flex gap-3">
+              <div className="flex shrink-0 gap-2 border-t border-sepia bg-sand p-4 md:gap-3 md:p-6">
                 {(canAdministerFamily || selectedPerson.id === currentUserMemberId) && (
                   <button
                     type="button"
                     onClick={handleSaveProfile}
                     disabled={saving || !editName.trim()}
-                    className="flex-1 bg-ink text-white py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest hover:bg-gold transition-colors text-center shadow disabled:opacity-50 flex items-center justify-center gap-2"
+                    className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-ink px-3 text-center text-sm font-semibold text-white shadow transition-colors hover:bg-gold-ink disabled:opacity-50"
                   >
-                    {saving ? <LoaderCircle size={14} className="animate-spin" /> : <Save size={14} />} Save
+                    {saving ? <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" /> : <Save size={14} />} Save
                   </button>
                 )}
                 {canAdministerFamily && selectedPerson.id !== currentUserMemberId && (
@@ -1127,7 +1568,7 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
                     type="button"
                     onClick={() => handleRemoveMember(selectedPerson.id)}
                     disabled={saving}
-                    className="bg-red-50 text-red-600 border border-red-200 p-3 rounded-xl text-[10px] font-bold uppercase tracking-widest hover:bg-red-100 transition-all flex items-center justify-center gap-1.5"
+                    className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3 text-sm font-semibold text-red-600 transition-all hover:bg-red-100"
                   >
                     <Trash2 size={14} /> Remove
                   </button>
@@ -1135,7 +1576,7 @@ export function FamilyTree({ familyId, familyName, members, currentUserMemberId,
                 <button 
                   type="button"
                   onClick={() => setSelectedPerson(null)}
-                  className="px-6 bg-white border border-sepia text-ink/60 py-3 rounded-xl text-[10px] font-bold uppercase tracking-widest hover:text-ink hover:border-gold transition-all"
+                  className="min-h-11 rounded-xl border border-sepia bg-white px-4 text-sm font-semibold text-ink/60 transition-all hover:border-gold hover:text-ink"
                 >
                   Close
                 </button>

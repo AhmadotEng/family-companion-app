@@ -1,5 +1,5 @@
 /* @vitest-environment jsdom */
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/client';
@@ -52,6 +52,38 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function setMobileViewport(matches: boolean) {
+  let currentMatches = matches;
+  const listeners = new Set<(event: MediaQueryListEvent) => void>();
+  const mediaQueryList = {
+    get matches() { return currentMatches; },
+    media: '(max-width: 767px)',
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) => listeners.add(listener)),
+    removeEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) => listeners.delete(listener)),
+    dispatchEvent: vi.fn(),
+  };
+  vi.stubGlobal('matchMedia', vi.fn((query: string) => query === '(max-width: 767px)' ? mediaQueryList : ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })));
+  return {
+    change(nextMatches: boolean) {
+      currentMatches = nextMatches;
+      const event = { matches: nextMatches, media: mediaQueryList.media } as MediaQueryListEvent;
+      listeners.forEach(listener => listener(event));
+    },
+  };
 }
 
 function gathering(
@@ -122,18 +154,102 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe('Calendar responsive views', () => {
+  it('defaults a phone viewport to Agenda and keeps Month available', async () => {
+    setMobileViewport(true);
+    const user = userEvent.setup();
+    const todayGathering = gathering(familyId, 'mobile-today', 'Mobile family lunch');
+    apiMocks.listGatherings.mockResolvedValue({ gatherings: [todayGathering] });
+
+    render(calendarElement({ selectedFamilyId: familyId, selectedMembers: [dad] }));
+
+    expect(await screen.findByText('Mobile family lunch')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Agenda' }).getAttribute('aria-pressed')).toBe('true');
+    const week = screen.getByRole('region', { name: 'Gathering week' });
+    const agendaDays = within(week).getAllByRole('button');
+    const today = agendaDays.find(button => button.getAttribute('aria-current') === 'date');
+    const anotherDay = agendaDays.find(button => button !== today);
+    expect(week.firstElementChild?.className).toContain('gap-px');
+    expect(agendaDays.every(button => button.className.includes('min-w-11'))).toBe(true);
+    expect(today).toBeTruthy();
+    expect(today?.getAttribute('aria-pressed')).toBe('true');
+    expect(anotherDay).toBeTruthy();
+    await user.click(anotherDay!);
+    expect(anotherDay?.getAttribute('aria-pressed')).toBe('true');
+    expect(anotherDay?.getAttribute('aria-current')).toBeNull();
+    expect(today?.getAttribute('aria-current')).toBe('date');
+    expect(today?.getAttribute('aria-pressed')).toBe('false');
+    expect(screen.queryByRole('region', { name: 'Gathering calendar' })).toBeNull();
+    const planGatheringButton = screen.getByRole('button', { name: 'Plan gathering' });
+    expect(planGatheringButton.className).toContain('fixed');
+    expect(planGatheringButton.className.split(' ')).toContain('bg-gold-ink');
+    expect(planGatheringButton.className.split(' ')).toContain('text-white');
+    expect(planGatheringButton.className.split(' ')).toContain('sm:bg-ink');
+
+    await user.click(screen.getByRole('button', { name: 'Month' }));
+
+    expect(screen.getByRole('button', { name: 'Month' }).getAttribute('aria-pressed')).toBe('true');
+    const month = screen.getByRole('region', { name: 'Gathering calendar' });
+    expect(month).toBeTruthy();
+    expect(month.className.split(' ')).toContain('p-1');
+    expect(month.firstElementChild?.className).toContain('gap-px');
+    const monthDays = within(month).getAllByRole('button');
+    expect(monthDays.every(button => button.className.includes('min-w-11'))).toBe(true);
+    expect(monthDays.filter(button => button.getAttribute('aria-pressed') === 'true')).toHaveLength(1);
+  });
+
+  it('follows breakpoint changes until the user explicitly chooses a view', async () => {
+    const viewport = setMobileViewport(false);
+    const user = userEvent.setup();
+    render(calendarElement({ selectedFamilyId: familyId, selectedMembers: [dad] }));
+
+    expect(screen.getByRole('button', { name: 'Month' }).getAttribute('aria-pressed')).toBe('true');
+    act(() => viewport.change(true));
+    expect(screen.getByRole('button', { name: 'Agenda' }).getAttribute('aria-pressed')).toBe('true');
+
+    await user.click(screen.getByRole('button', { name: 'Month' }));
+    act(() => viewport.change(false));
+    act(() => viewport.change(true));
+    expect(screen.getByRole('button', { name: 'Month' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('keeps the desktop month default and opens a dvh mobile-capable planner shell', async () => {
+    setMobileViewport(false);
+    const user = userEvent.setup();
+    render(calendarElement({ selectedFamilyId: familyId, selectedMembers: [dad] }));
+
+    expect(screen.getByRole('button', { name: 'Month' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('region', { name: 'Gathering calendar' })).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Plan gathering' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Plan a gathering' });
+    const sheet = dialog.querySelector('section');
+    expect(dialog.className).toContain('mobile-sheet-overlay');
+    expect(sheet?.className).toContain('h-[100dvh]');
+    expect(sheet?.className).toContain('sm:max-h-[92dvh]');
+    expect(sheet?.className).toContain('mobile-sheet-surface');
+    expect(sheet?.querySelector('header')?.className).toContain('mobile-sheet-header');
+    expect(sheet?.querySelector('[data-gathering-planner-scroll-region]')?.className).toContain('mobile-sheet-scroll-region');
+    expect(sheet?.querySelector('[data-gathering-planner-footer]')?.className).toContain('mobile-sheet-footer');
+  });
 });
 
 describe('Calendar shared gathering planner', () => {
   it('opens a manual planner with the selected date convenience and no writes', async () => {
     const user = userEvent.setup();
-    render(<Calendar familyId={familyId} members={[dad]} familyRole="owner" />);
+    render(<main><Calendar familyId={familyId} members={[dad]} familyRole="owner" /></main>);
+    const scrollRoot = document.querySelector('main') as HTMLElement;
     const trigger = screen.getByRole('button', { name: 'Plan gathering' });
 
     await user.click(trigger);
 
-    expect(await screen.findByRole('dialog', { name: 'Plan a gathering' })).toBeTruthy();
+    const dialog = await screen.findByRole('dialog', { name: 'Plan a gathering' });
+    expect(dialog.parentElement).toBe(document.body);
+    expect(scrollRoot.style.overflow).toBe('hidden');
     const close = screen.getByRole('button', { name: 'Close' });
     expect(document.activeElement).toBe(close);
     expect((screen.getByLabelText('Date') as HTMLInputElement).value).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -147,6 +263,7 @@ describe('Calendar shared gathering planner', () => {
     expect(document.activeElement).toBe(close);
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Plan a gathering' })).toBeNull());
+    expect(scrollRoot.style.overflow).toBe('');
     await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
@@ -679,6 +796,9 @@ describe('Calendar shared gathering planner', () => {
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).toBeNull();
       expect(readManualGatheringRetryState(originalUserId, familyId)).toBeNull();
+      expect(document.body.style.overflow).toBe('');
+      expect(view.container.getAttribute('aria-hidden')).toBeNull();
+      expect(view.container.inert).toBe(false);
     });
     await submitManualDraft(user, 'New context draft');
 
@@ -734,7 +854,9 @@ describe('Calendar shared gathering planner', () => {
     await submitManualDraft(user, 'Changed gathering details');
     expect(await screen.findByText(/retry key was already used with different gathering details/i)).toBeTruthy();
     expect(screen.getByText(/server did not confirm whether the gathering was created/i)).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: 'Start a new draft instead' }));
+    const startNewDraft = screen.getByRole('button', { name: 'Start a new draft instead' });
+    expect(startNewDraft.className).toContain('min-h-11');
+    await user.click(startNewDraft);
 
     expect(confirm).toHaveBeenCalledOnce();
     expect(screen.getByRole('dialog', { name: 'Review before saving' })).toBeTruthy();
@@ -776,6 +898,13 @@ describe('Calendar shared gathering planner', () => {
     render(calendarElement({ selectedFamilyId: familyId, selectedMembers: [dad] }));
 
     await user.click(await screen.findByRole('button', { name: 'Prepare links' }));
+    const inviteDialog = screen.getByRole('dialog', { name: 'Invite to Gathering with unsafe link' });
+    const inviteSheet = inviteDialog.querySelector('section');
+    expect(inviteDialog.className).toContain('mobile-sheet-overlay');
+    expect(inviteSheet?.className).toContain('mobile-sheet-surface');
+    expect(inviteSheet?.querySelector('header')?.className).toContain('mobile-sheet-header');
+    expect(inviteSheet?.querySelector('.mobile-sheet-scroll-region')).toBeTruthy();
+    expect(inviteSheet?.querySelector('.mobile-sheet-footer')).toBeTruthy();
     await user.click(screen.getByRole('checkbox', { name: /Dad/ }));
     await user.click(screen.getByRole('button', { name: 'Review' }));
     await user.click(screen.getByRole('button', { name: 'Confirm & prepare' }));

@@ -22,13 +22,17 @@ const appHarness = vi.hoisted(() => ({
 }));
 
 vi.mock('./components/Layout', () => ({
-  Layout: ({ children, setActiveTab }: any) => (
+  Layout: ({ children, setActiveTab, onSignOut, onOpenLocationSettings, accountName }: any) => (
     <div>
       <nav>
         <button type="button" onClick={() => setActiveTab('home')}>Go Home</button>
         <button type="button" onClick={() => setActiveTab('assistant')}>Go Assistant</button>
         <button type="button" onClick={() => setActiveTab('tree')}>Go Tree</button>
       </nav>
+      <button type="button" onClick={() => onOpenLocationSettings?.()}>Open privacy settings</button>
+      <button type="button" onClick={() => void onSignOut?.()} aria-label={`Sign out ${accountName}`}>
+        Sign out
+      </button>
       {children}
     </div>
   ),
@@ -71,10 +75,12 @@ vi.mock('./screens/Home', () => ({
 }));
 
 vi.mock('./screens/FamilyTree', () => ({
-  FamilyTree: ({ familyName, onRefresh }: any) => (
+  FamilyTree: ({ familyName, onRefresh, openLocationSettingsRequest, onLocationSettingsRequestHandled }: any) => (
     <section>
       <p data-testid="tree-family-name">{familyName}</p>
+      <p data-testid="tree-location-request">{String(Boolean(openLocationSettingsRequest))}</p>
       <button type="button" onClick={() => void onRefresh()}>Refresh family context</button>
+      <button type="button" onClick={() => onLocationSettingsRequestHandled?.()}>Consume location request</button>
     </section>
   ),
 }));
@@ -211,6 +217,19 @@ afterEach(() => {
 });
 
 describe('App family-scoped orchestration', () => {
+  it('routes the account privacy action to Heritage as a consumable sheet request', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    expect(await screen.findByText('A Member')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Open privacy settings' }));
+    expect(await screen.findByTestId('tree-family-name')).toBeTruthy();
+    expect(screen.getByTestId('tree-location-request').textContent).toBe('true');
+
+    await user.click(screen.getByRole('button', { name: 'Consume location request' }));
+    expect(screen.getByTestId('tree-location-request').textContent).toBe('false');
+  });
+
   it('wires an Assistant gathering result to the exact Calendar focus target', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -315,5 +334,44 @@ describe('App family-scoped orchestration', () => {
       await pendingLogout.promise;
     });
     expect(await screen.findByRole('button', { name: 'Sign in next family' })).toBeTruthy();
+  });
+
+  it('keeps the boot status inside the standalone dynamic-viewport shell', () => {
+    const pendingSession = deferred<AuthSession>();
+    apiMocks.me.mockReturnValue(pendingSession.promise);
+    const { container } = render(<App />);
+
+    expect(screen.getByText('Opening your private family space…')).toBeTruthy();
+    expect(container.querySelector('main')?.className).toContain('standalone-page');
+  });
+
+  it('keeps the no-family state safe-area aware with a full-size sign-out target', async () => {
+    apiMocks.me.mockResolvedValue({
+      ...session(familyA, 'A'),
+      families: [],
+      activeFamilyId: null,
+    });
+    render(<App />);
+
+    const heading = await screen.findByRole('heading', { name: 'No family space assigned' });
+    expect(heading.closest('main')?.className).toContain('standalone-page');
+    const signOut = screen.getByRole('button', { name: 'Sign out' });
+    expect(signOut.className).toContain('min-h-11');
+    expect(signOut.className).toContain('text-sm');
+    expect(signOut.className).not.toContain('uppercase');
+  });
+
+  it('keeps the full-page family error responsive with wrapping 44px actions', async () => {
+    apiMocks.getContext.mockRejectedValue(new Error('Family context unavailable'));
+    render(<App />);
+
+    const heading = await screen.findByRole('heading', { name: 'Family data could not load' });
+    expect(heading.closest('main')?.className).toContain('standalone-page');
+    for (const label of ['Retry', 'Sign out']) {
+      const button = screen.getByRole('button', { name: label });
+      expect(button.className).toContain('min-h-11');
+      expect(button.className).toContain('text-sm');
+      expect(button.className).not.toContain('uppercase');
+    }
   });
 });

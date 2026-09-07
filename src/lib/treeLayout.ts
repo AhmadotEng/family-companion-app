@@ -20,6 +20,31 @@ export interface ConnectionLine {
   routeOffset?: number;
 }
 
+export interface TreeBounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+}
+
+export interface TreeTransform {
+  scale: number;
+  x: number;
+  y: number;
+}
+
+export interface FocusedRelationshipGroups {
+  parents: FamilyMember[];
+  partners: FamilyMember[];
+  siblings: FamilyMember[];
+  children: FamilyMember[];
+  others: FamilyMember[];
+}
+
 const uniqueIds = (ids: (string | undefined)[]) => (
   ids.filter((id, index): id is string => Boolean(id) && ids.indexOf(id) === index)
 );
@@ -28,6 +53,133 @@ const getSpouseIds = (member: FamilyMember) => uniqueIds([
   member.spouseId,
   ...(member.spouseIds || [])
 ]);
+
+const compareMembers = (a: FamilyMember, b: FamilyMember) => (
+  a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || a.id.localeCompare(b.id)
+);
+
+/**
+ * Groups the effective Heritage projection relative to a focused member.
+ * Every relationship check is symmetric so the presentation remains useful
+ * while older families are being upgraded to the completed server projection.
+ */
+export function groupMembersByFocus(members: FamilyMember[], focusId: string): FocusedRelationshipGroups {
+  const focus = members.find(member => member.id === focusId);
+  const empty: FocusedRelationshipGroups = { parents: [], partners: [], siblings: [], children: [], others: [] };
+  if (!focus) return empty;
+
+  const parentIds = new Set(uniqueIds([
+    ...(focus.parentIds || []),
+    ...members.filter(member => member.childrenIds?.includes(focus.id)).map(member => member.id)
+  ]));
+  const partnerIds = new Set(uniqueIds([
+    ...getSpouseIds(focus),
+    ...members.filter(member => getSpouseIds(member).includes(focus.id)).map(member => member.id)
+  ]));
+  const childIds = new Set(uniqueIds([
+    ...(focus.childrenIds || []),
+    ...members.filter(member => member.parentIds?.includes(focus.id)).map(member => member.id)
+  ]));
+  const focusParentIds = new Set(parentIds);
+  const siblingIds = new Set(uniqueIds([
+    ...(focus.siblingIds || []),
+    ...members.filter(member => member.siblingIds?.includes(focus.id)).map(member => member.id),
+    ...members
+      .filter(member => member.id !== focus.id && member.parentIds?.some(parentId => focusParentIds.has(parentId)))
+      .map(member => member.id),
+    ...members
+      .filter(member => member.id !== focus.id && Boolean(focus.siblingGroupId) && member.siblingGroupId === focus.siblingGroupId)
+      .map(member => member.id)
+  ]));
+
+  // A stronger relationship always wins over a derived sibling relationship.
+  parentIds.forEach(id => siblingIds.delete(id));
+  partnerIds.forEach(id => siblingIds.delete(id));
+  childIds.forEach(id => siblingIds.delete(id));
+
+  const groups: FocusedRelationshipGroups = { parents: [], partners: [], siblings: [], children: [], others: [] };
+  members.forEach(member => {
+    if (member.id === focus.id) return;
+    if (parentIds.has(member.id)) groups.parents.push(member);
+    else if (partnerIds.has(member.id)) groups.partners.push(member);
+    else if (siblingIds.has(member.id)) groups.siblings.push(member);
+    else if (childIds.has(member.id)) groups.children.push(member);
+    else groups.others.push(member);
+  });
+
+  Object.values(groups).forEach(group => group.sort(compareMembers));
+  return groups;
+}
+
+export function relationshipLabelForFocus(
+  memberId: string,
+  focusId: string,
+  groups: FocusedRelationshipGroups,
+  fallback = 'Relative'
+) {
+  if (memberId === focusId) return 'Focused person';
+  if (groups.parents.some(member => member.id === memberId)) return 'Parent';
+  if (groups.partners.some(member => member.id === memberId)) return 'Partner / spouse';
+  if (groups.siblings.some(member => member.id === memberId)) return 'Sibling';
+  if (groups.children.some(member => member.id === memberId)) return 'Child';
+  return fallback === 'Me' ? 'Relative' : fallback;
+}
+
+export function getTreeBounds(
+  nodes: LayoutNode[],
+  xSpacing: number,
+  ySpacing: number,
+  nodeWidth = 116,
+  nodeHeight = 124
+): TreeBounds {
+  if (nodes.length === 0) {
+    return { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0, centerX: 0, centerY: 0 };
+  }
+
+  const halfWidth = nodeWidth / 2;
+  const halfHeight = nodeHeight / 2;
+  const minX = Math.min(...nodes.map(node => node.x * xSpacing - halfWidth));
+  const maxX = Math.max(...nodes.map(node => node.x * xSpacing + halfWidth));
+  const minY = Math.min(...nodes.map(node => node.y * ySpacing - halfHeight));
+  const maxY = Math.max(...nodes.map(node => node.y * ySpacing + halfHeight));
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+    centerX: (minX + maxX) / 2,
+    centerY: (minY + maxY) / 2
+  };
+}
+
+export function calculateFitTransform(
+  bounds: TreeBounds,
+  viewportWidth: number,
+  viewportHeight: number,
+  padding = 32,
+  minScale = 0.28,
+  maxScale = 1
+): TreeTransform {
+  if (viewportWidth <= 0 || viewportHeight <= 0 || bounds.width <= 0 || bounds.height <= 0) {
+    return { scale: maxScale, x: 0, y: 0 };
+  }
+
+  const usableWidth = Math.max(1, viewportWidth - padding * 2);
+  const usableHeight = Math.max(1, viewportHeight - padding * 2);
+  const scale = Math.min(maxScale, Math.max(minScale, Math.min(
+    usableWidth / bounds.width,
+    usableHeight / bounds.height
+  )));
+
+  return {
+    scale,
+    x: -bounds.centerX * scale,
+    y: -bounds.centerY * scale
+  };
+}
 
 export function computeTreeLayout(members: FamilyMember[], rootId: string = 'm1'): LayoutNode[] {
   if (members.length === 0) return [];

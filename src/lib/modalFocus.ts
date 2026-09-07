@@ -30,10 +30,12 @@ export function useModalFocusTrap<T extends HTMLElement>({
   active,
   onEscape,
   escapeDisabled = false,
+  scrollRoot,
 }: {
   active: boolean;
   onEscape: () => void;
   escapeDisabled?: boolean;
+  scrollRoot?: RefObject<HTMLElement | null>;
 }): RefObject<T | null> {
   const containerRef = useRef<T>(null);
   const onEscapeRef = useRef(onEscape);
@@ -49,8 +51,38 @@ export function useModalFocusTrap<T extends HTMLElement>({
       ? document.activeElement
       : null;
 
+    // Move focus off the page before making its branch inaccessible. Chromium
+    // rejects aria-hidden on an ancestor of the currently focused element.
     const initialTarget = focusableElements(container)[0] ?? container;
     focusWithoutScrolling(initialTarget);
+
+    const hiddenSiblings: Array<{
+      element: HTMLElement;
+      ariaHidden: string | null;
+      inert: boolean;
+    }> = [];
+    let activeBranch: HTMLElement = container;
+    while (activeBranch.parentElement) {
+      const parent = activeBranch.parentElement;
+      for (const sibling of Array.from(parent.children)) {
+        if (sibling === activeBranch || !(sibling instanceof HTMLElement)) continue;
+        hiddenSiblings.push({
+          element: sibling,
+          ariaHidden: sibling.getAttribute('aria-hidden'),
+          inert: Boolean(sibling.inert),
+        });
+        sibling.setAttribute('aria-hidden', 'true');
+        sibling.inert = true;
+      }
+      activeBranch = parent;
+      if (parent === document.body) break;
+    }
+
+    const scrollContainer = scrollRoot?.current ?? container.closest<HTMLElement>('main');
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousScrollContainerOverflow = scrollContainer?.style.overflow ?? '';
+    document.body.style.overflow = 'hidden';
+    if (scrollContainer) scrollContainer.style.overflow = 'hidden';
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -85,9 +117,16 @@ export function useModalFocusTrap<T extends HTMLElement>({
     document.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = previousBodyOverflow;
+      if (scrollContainer) scrollContainer.style.overflow = previousScrollContainerOverflow;
+      for (const { element, ariaHidden, inert } of hiddenSiblings) {
+        if (ariaHidden === null) element.removeAttribute('aria-hidden');
+        else element.setAttribute('aria-hidden', ariaHidden);
+        element.inert = inert;
+      }
       if (previouslyFocused?.isConnected) focusWithoutScrolling(previouslyFocused);
     };
-  }, [active]);
+  }, [active, scrollRoot]);
 
   return containerRef;
 }

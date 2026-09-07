@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   ArrowRight,
@@ -107,6 +108,10 @@ interface AgentResponse {
   message: string;
   proposal?: ActionProposal;
   planner?: AgentGatheringPlannerPayload;
+}
+
+function BodyPortal({ children }: { children: ReactNode }) {
+  return typeof document === 'undefined' ? children : createPortal(children, document.body);
 }
 
 interface RestoredAgentMessage {
@@ -354,7 +359,7 @@ function proposalResolutionError(caught: unknown, decision: 'confirm' | 'reject'
 const welcomeMessage: AgentMessage = {
   id: 'welcome',
   role: 'assistant',
-  text: agentWelcomeText,
+  text: 'How can I help your family today?',
 };
 
 const agentSessionKey = (familyId: string) => `family-companion:agent-session:${familyId}`;
@@ -465,7 +470,10 @@ export function Assistant({
   const [error, setError] = useState<AgentErrorNotice>();
   const [planRefreshVersion, setPlanRefreshVersion] = useState(0);
   const [aiProcessingConsent, setAiProcessingConsent] = useState(false);
+  const [showConsentDetails, setShowConsentDetails] = useState(false);
+  const [composerFocused, setComposerFocused] = useState(false);
   const [ephemeralInvitationLinks, setEphemeralInvitationLinks] = useState<EphemeralInvitationLinks>();
+  const plannerScrollRootRef = useRef<HTMLElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const activeFamilyIdRef = useRef(familyId);
   const activeSessionIdRef = useRef(sessionId);
@@ -523,6 +531,8 @@ export function Assistant({
     setUncertainProposalIds(new Set());
     setError(undefined);
     setAiProcessingConsent(false);
+    setShowConsentDetails(false);
+    setComposerFocused(false);
     setEphemeralInvitationLinks(undefined);
   }, [familyId]);
 
@@ -625,6 +635,7 @@ export function Assistant({
       setActivePlannerMessageId(undefined);
       setActivePlannerStage('details');
       setPlannerBusy(false);
+      setComposerFocused(false);
     }
   }, [isActive]);
 
@@ -700,6 +711,7 @@ export function Assistant({
       if (activeFamilyIdRef.current === requestFamilyId) {
         setIsLoading(false);
         setAiProcessingConsent(false);
+        setShowConsentDetails(false);
       }
     }
   };
@@ -960,6 +972,7 @@ export function Assistant({
       setPlannerBusy(false);
       setInput('');
       setAiProcessingConsent(false);
+      setShowConsentDetails(false);
       setEphemeralInvitationLinks(undefined);
       forgetSession(requestFamilyId);
     } catch (requestError) {
@@ -983,53 +996,75 @@ export function Assistant({
     active: Boolean(activePlannerMessage?.planner && familyId),
     onEscape: closeActivePlanner,
     escapeDisabled: plannerBusy,
+    scrollRoot: plannerScrollRootRef,
   });
 
   return (
-    <div className="flex min-h-[43rem] flex-col lg:h-[calc(100vh-12rem)]">
-      <div className="mb-4 rounded-2xl border border-gold/20 bg-gold/10 p-4 text-ink">
-        <div className="flex items-start gap-3">
-          <ShieldCheck className="mt-0.5 shrink-0 text-gold" size={18} />
-          <div className="flex-1">
-            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-gold">Confirm-before-write agent</p>
-            <p className="mt-1 text-xs leading-relaxed text-ink/65">
-              The model may suggest actions, but validated server code performs them only after you approve the exact change.
-            </p>
-          </div>
+    <div
+      ref={(element: HTMLDivElement | null) => {
+        plannerScrollRootRef.current = element?.closest<HTMLElement>('main') ?? null;
+      }}
+      className="assistant-mobile-shell flex h-full min-h-0 flex-1 flex-col"
+      data-testid="assistant-mobile-shell"
+      data-composer-focused={composerFocused ? 'true' : 'false'}
+    >
+      <header className="assistant-mobile-optional mb-1 flex min-h-9 shrink-0 items-center justify-between sm:hidden">
+        <p className="text-[11px] font-medium text-ink/50">Private, review-first family support</p>
+        <span className="flex size-8 items-center justify-center rounded-full border border-sepia bg-white text-gold" aria-hidden="true">
+          <Bot size={16} />
+        </span>
+      </header>
+
+      <details className="assistant-mobile-optional assistant-safety-panel group mb-2 shrink-0 overflow-hidden rounded-2xl border border-gold/20 bg-gold/10 text-ink">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-gold-ink [&::-webkit-details-marker]:hidden">
+          <ShieldCheck className="shrink-0 text-gold" size={17} />
+          <span className="min-w-0 flex-1">
+            <span className="block text-xs font-bold text-ink">Confirm before anything changes</span>
+            <span className="block text-[11px] text-ink/55">Safety and conversation controls</span>
+          </span>
+          <span className="text-[11px] font-bold text-gold-ink group-open:hidden">Read</span>
+          <span className="hidden text-[11px] font-bold text-gold-ink group-open:inline">Close</span>
+        </summary>
+        <div className="border-t border-gold/15 px-3 pb-3 pt-2">
+          <p className="text-xs leading-relaxed text-ink/65">
+            The model may suggest actions, but validated server code performs them only after you approve the exact change.
+          </p>
           {sessionId && (
             <button
               type="button"
               onClick={() => void deleteConversation()}
               disabled={isLoading || isRestoring}
-              className="shrink-0 rounded-xl border border-gold/30 px-3 py-2 text-[9px] font-bold uppercase tracking-wider text-ink/55 hover:border-red-300 hover:text-red-700 disabled:opacity-40"
+              className="mt-2 min-h-11 rounded-xl border border-gold/30 px-3 text-xs font-bold tracking-wide text-ink/55 hover:border-red-300 hover:text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink disabled:opacity-40"
             >
               Delete conversation
             </button>
           )}
         </div>
-      </div>
+      </details>
 
       {!familyId && (
-        <div className="mb-4 flex items-center gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-700" role="alert">
+        <div className="mb-2 flex shrink-0 items-center gap-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-red-700" role="alert">
           <AlertCircle size={18} />
           <p className="text-xs font-semibold">Sign in and select a family before using the agent.</p>
         </div>
       )}
 
       {familyId && roleNotice && (
-        <div className="mb-4 flex items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-800" role="status">
+        <div className="mb-2 flex shrink-0 items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-amber-800" role="status">
           <AlertCircle size={18} />
           <p className="text-xs font-semibold">{roleNotice}</p>
         </div>
       )}
 
       {familyId ? (
-        <ReconnectionPlansPanel
-          familyId={familyId}
-          members={members}
-          refreshVersion={planRefreshVersion}
-          onUsePlan={onUseReconnectionPlan}
-        />
+        <div className="assistant-mobile-optional assistant-reconnection-panel mb-2 shrink-0">
+          <ReconnectionPlansPanel
+            familyId={familyId}
+            members={members}
+            refreshVersion={planRefreshVersion}
+            onUsePlan={onUseReconnectionPlan}
+          />
+        </div>
       ) : null}
 
       {ephemeralInvitationLinks ? (
@@ -1044,7 +1079,7 @@ export function Assistant({
       ) : null}
 
       {error && (
-        <div className="mb-4 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-700" role="alert" data-agent-error-phase={error.phase}>
+        <div className="mb-2 flex shrink-0 items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-red-700" role="alert" data-agent-error-phase={error.phase}>
           <AlertCircle className="mt-0.5 shrink-0" size={18} />
           <div>
             <p className="text-xs font-bold">{error.title}</p>
@@ -1054,33 +1089,42 @@ export function Assistant({
         </div>
       )}
 
-      <div className="mb-4 min-h-40 flex-1 space-y-5 overflow-y-auto pr-2 custom-scrollbar" aria-live="polite">
+      <div className="mb-2 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1 custom-scrollbar sm:space-y-5 sm:pr-2" aria-live="polite" data-testid="assistant-message-list">
         {messages.map((message) => (
           <motion.div
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             key={message.id}
-            className={cn('flex max-w-[95%] items-start gap-3 sm:max-w-[88%]', message.role === 'user' ? 'ml-auto flex-row-reverse' : 'mr-auto')}
+            className={cn('flex max-w-[96%] items-start gap-2 sm:max-w-[88%] sm:gap-3', message.role === 'user' ? 'ml-auto flex-row-reverse' : 'mr-auto')}
+            data-agent-message={message.id === 'welcome' ? 'welcome' : message.role}
+            data-agent-speaker={message.role}
+            role="article"
+            aria-label={message.role === 'user' ? 'Your message' : 'AI Helper message'}
           >
-            <div className={cn(
-              'flex size-9 shrink-0 items-center justify-center rounded-full border shadow-sm',
-              message.role === 'user' ? 'border-ink bg-ink text-white' : 'border-sepia bg-white text-gold',
-            )}>
-              {message.role === 'user' ? <span className="text-[10px] font-bold">YOU</span> : <Bot size={17} />}
-            </div>
+            {message.role === 'user' ? (
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-full border border-ink bg-ink text-white shadow-sm sm:size-9" aria-hidden="true">
+                <span className="text-[9px] font-bold">You</span>
+              </div>
+            ) : null}
             <div className="min-w-0 flex-1 space-y-3">
               <div className={cn(
-                'whitespace-pre-wrap rounded-3xl p-5 text-sm leading-relaxed shadow-sm',
+                'whitespace-pre-wrap rounded-2xl p-3.5 text-sm leading-relaxed shadow-sm sm:rounded-3xl sm:p-5',
                 message.role === 'user'
                   ? 'rounded-tr-none bg-ink text-white'
                   : 'rounded-tl-none border border-sepia bg-white text-ink',
               )}>
                 {message.text}
+                {message.id === 'welcome' ? (
+                  <details className="mt-2 whitespace-normal border-t border-sepia/60 pt-2">
+                    <summary className="min-h-11 cursor-pointer py-2 text-xs font-bold text-gold-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink">How it works</summary>
+                    <p className="pb-1 text-xs leading-relaxed text-ink/60">{agentWelcomeText}</p>
+                  </details>
+                ) : null}
                 {message.completedActionType && message.completedActionType !== 'PREPARE_INVITATION_LINKS' && getAgentResultDestinationLabel(message.completedActionType) && onNavigateToActionResult ? (
                   <button
                     type="button"
                     onClick={() => onNavigateToActionResult(message.completedActionType!)}
-                    className="mt-3 flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-gold hover:text-ink"
+                    className="mt-3 flex min-h-11 items-center gap-1.5 text-[11px] font-bold tracking-wide text-gold-ink hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink"
                   >
                     {getAgentResultDestinationLabel(message.completedActionType)} <ArrowRight size={12} />
                   </button>
@@ -1088,13 +1132,13 @@ export function Assistant({
               </div>
 
               {message.proposal && (
-                <div className="rounded-3xl border border-gold/35 bg-white p-5 shadow-md">
+                <div className="rounded-2xl border border-gold/35 bg-white p-4 shadow-md sm:rounded-3xl sm:p-5">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-gold">Proposed action</p>
-                      <h3 className="mt-1 font-serif text-lg font-bold italic text-ink">{message.proposal.title}</h3>
+                      <p className="text-[11px] font-bold tracking-wide text-gold-ink">Proposed action</p>
+                      <h3 className="mt-1 font-serif text-base font-bold italic text-ink sm:text-lg">{message.proposal.title}</h3>
                     </div>
-                    <span className="rounded-full bg-sand px-3 py-1 text-[8px] font-bold uppercase tracking-wider text-ink/50">
+                    <span className="rounded-full bg-sand px-3 py-1 text-[10px] font-bold tracking-wide text-ink/50">
                       {humanizeAgentLabel(message.proposal.actionType)}
                     </span>
                   </div>
@@ -1103,7 +1147,7 @@ export function Assistant({
                   {message.proposal.details && Object.keys(message.proposal.details).length > 0 && (
                     <dl className="mt-4 divide-y divide-sepia/40 overflow-hidden rounded-2xl border border-sepia/50">
                       {Object.entries(message.proposal.details).map(([label, value]) => (
-                        <div key={label} className="grid grid-cols-[8rem_1fr] gap-3 px-4 py-2.5 text-xs">
+                        <div key={label} className="grid grid-cols-1 gap-1 px-4 py-2.5 text-xs min-[400px]:grid-cols-[7rem_1fr] min-[400px]:gap-3 sm:grid-cols-[8rem_1fr]">
                           <dt className="font-bold text-ink/45">{humanizeAgentLabel(label)}</dt>
                           <dd className="break-words text-ink">{formatAgentDetail(value)}</dd>
                         </div>
@@ -1124,7 +1168,7 @@ export function Assistant({
                           type="button"
                           disabled={Boolean(activeProposalId)}
                           onClick={() => void resolveProposal(message.proposal!, 'confirm', { statusCheck: true })}
-                          className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-amber-900 hover:bg-amber-100 disabled:opacity-40"
+                          className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 text-[11px] font-bold tracking-wide text-amber-900 hover:bg-amber-100 disabled:opacity-40"
                         >
                           {activeProposalId === message.proposal.id ? <LoaderCircle className="animate-spin" size={15} /> : <Check size={15} />}
                           Check confirmation status
@@ -1134,7 +1178,7 @@ export function Assistant({
                           type="button"
                           disabled={Boolean(activeProposalId)}
                           onClick={() => void resolveProposal(message.proposal!, 'confirm')}
-                          className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-ink px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-white transition-colors hover:bg-gold disabled:opacity-40"
+                          className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-ink px-4 text-[11px] font-bold tracking-wide text-white transition-colors hover:bg-gold-ink disabled:opacity-40"
                         >
                           {activeProposalId === message.proposal.id ? <LoaderCircle className="animate-spin" size={15} /> : <Check size={15} />}
                           {getAgentConfirmButtonLabel(message.proposal.actionType)}
@@ -1149,7 +1193,7 @@ export function Assistant({
                           type="button"
                           disabled={Boolean(activeProposalId)}
                           onClick={() => void resolveProposal(message.proposal!, 'reject')}
-                          className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-sepia px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-ink/60 transition-colors hover:border-red-300 hover:text-red-600 disabled:opacity-40"
+                          className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-sepia px-4 text-[11px] font-bold tracking-wide text-ink/60 transition-colors hover:border-red-300 hover:text-red-600 disabled:opacity-40"
                         >
                           <X size={15} /> Cancel
                         </button>
@@ -1157,7 +1201,7 @@ export function Assistant({
                     </div>
                   ) : (
                     <div className={cn(
-                      'mt-4 flex items-center gap-2 rounded-xl px-4 py-3 text-[10px] font-bold uppercase tracking-wider',
+                      'mt-4 flex min-h-11 items-center gap-2 rounded-xl px-4 py-3 text-[11px] font-bold tracking-wide',
                       message.proposalStatus === 'confirmed'
                         ? 'bg-green-50 text-green-700'
                         : message.proposalStatus === 'expired'
@@ -1176,14 +1220,14 @@ export function Assistant({
               )}
 
               {message.planner && (
-                <div className="rounded-3xl border border-blue-200 bg-white p-5 shadow-md" data-agent-gathering-planner={message.plannerStatus ?? 'ready'}>
+                <div className="rounded-2xl border border-blue-200 bg-white p-4 shadow-md sm:rounded-3xl sm:p-5" data-agent-gathering-planner={message.plannerStatus ?? 'ready'}>
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-blue-700">Editable gathering plan</p>
-                      <h3 className="mt-1 font-serif text-lg font-bold italic text-ink">{message.planner.title}</h3>
+                      <p className="text-[11px] font-bold tracking-wide text-blue-700">Editable gathering plan</p>
+                      <h3 className="mt-1 font-serif text-base font-bold italic text-ink sm:text-lg">{message.planner.title}</h3>
                     </div>
                     <span className={cn(
-                      'rounded-full px-3 py-1 text-[8px] font-bold uppercase tracking-wider',
+                      'rounded-full px-3 py-1 text-[10px] font-bold tracking-wide',
                       message.plannerStatus === 'saved'
                         ? 'bg-green-50 text-green-700'
                         : message.plannerStatus === 'links_pending'
@@ -1219,7 +1263,7 @@ export function Assistant({
                       <button
                         type="button"
                         onClick={() => viewPlannerMessageInCalendar(message)}
-                        className="mt-4 flex items-center gap-1.5 rounded-xl bg-ink px-4 py-3 text-[9px] font-bold uppercase tracking-widest text-white hover:bg-gold"
+                        className="mt-4 flex min-h-11 items-center gap-1.5 rounded-xl bg-ink px-4 text-[11px] font-bold tracking-wide text-white hover:bg-gold-ink"
                       >
                         {message.plannerStatus === 'links_pending' ? 'Prepare links in Calendar' : 'View Calendar'} <ArrowRight size={12} />
                       </button>
@@ -1228,7 +1272,7 @@ export function Assistant({
                     <button
                       type="button"
                       onClick={() => openPlanner(message.id)}
-                      className="mt-4 flex items-center gap-1.5 rounded-xl bg-ink px-4 py-3 text-[9px] font-bold uppercase tracking-widest text-white hover:bg-gold"
+                      className="mt-4 flex min-h-11 items-center gap-1.5 rounded-xl bg-ink px-4 text-[11px] font-bold tracking-wide text-white hover:bg-gold-ink"
                     >
                       {message.plannerStatus === 'dismissed' ? 'Reopen editable planner' : 'Open editable planner'}
                       <ArrowRight size={12} />
@@ -1241,9 +1285,9 @@ export function Assistant({
         ))}
 
         {(isLoading || isRestoring) && (
-          <div className="flex items-center gap-3 pl-12 text-gold">
+          <div className="flex items-center gap-3 pl-12 text-gold-ink">
             <LoaderCircle className="animate-spin" size={17} />
-            <span className="text-[10px] font-bold uppercase tracking-widest">
+            <span className="text-[11px] font-bold tracking-wide">
               {isRestoring ? 'Restoring private conversation' : 'Reading permitted family context'}
             </span>
           </div>
@@ -1251,73 +1295,116 @@ export function Assistant({
         <div ref={messagesEndRef} />
       </div>
 
-      {messages.length < 4 && (
-        <div className="mb-4 shrink-0">
-          <p className="mb-2 text-[9px] font-bold uppercase tracking-[0.25em] text-ink/40">Try a request</p>
-          <div className="flex flex-wrap gap-2">
-            {quickPrompts.map((prompt) => (
-              <button
-                key={prompt}
-                type="button"
-                onClick={() => setInput(prompt)}
-                className="rounded-xl border border-sepia bg-white px-3 py-2 text-left text-[10px] font-semibold text-ink/60 transition-colors hover:border-gold hover:text-gold"
-              >
-                <Sparkles className="mr-1.5 inline" size={12} /> {prompt}
-              </button>
-            ))}
+      <div
+        className="assistant-composer-dock sticky bottom-0 z-20 shrink-0 border-t border-sepia/80 bg-sand/95 pb-1 pt-2 backdrop-blur"
+        data-testid="assistant-composer-dock"
+      >
+        {messages.length < 4 && (
+          <div className="assistant-mobile-optional assistant-quick-prompts mb-2 shrink-0">
+            <p className="mb-1 px-0.5 text-[11px] font-bold tracking-wide text-ink/45">Try an example</p>
+            <div className="-mx-1 flex snap-x snap-mandatory gap-2 overflow-x-auto overscroll-x-contain px-1 pb-1 custom-scrollbar" data-testid="assistant-prompt-carousel">
+              {quickPrompts.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  onClick={() => setInput(prompt)}
+                  className="min-h-11 max-w-[82vw] shrink-0 snap-start truncate rounded-xl border border-sepia bg-white px-3 text-left text-[11px] font-semibold text-ink/60 transition-colors hover:border-gold-ink hover:text-gold-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink sm:max-w-sm"
+                  title={prompt}
+                >
+                  <Sparkles className="mr-1.5 inline" size={12} /> {prompt}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      <label className="mb-3 flex cursor-pointer items-start gap-3 rounded-2xl border border-sepia bg-white p-4 text-xs text-ink/65">
-        <input
-          type="checkbox"
-          checked={aiProcessingConsent}
-          onChange={(event) => setAiProcessingConsent(event.target.checked)}
-          disabled={!familyId || isLoading || isRestoring}
-          className="mt-0.5 size-4 accent-gold"
-        />
-        <span>
-          <strong className="block text-ink">Send this request to Google Gemini</strong>
-          {agentDataDisclosureText}
-        </span>
-      </label>
-      <div className="relative shrink-0">
-        <label htmlFor="family-agent-input" className="sr-only">Ask the family agent</label>
-        <input
-          id="family-agent-input"
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              sendMessage();
+        <div
+          className="assistant-required-composer"
+          onFocusCapture={() => setComposerFocused(true)}
+          onBlurCapture={event => {
+            const nextTarget = event.relatedTarget;
+            if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+              setComposerFocused(false);
             }
           }}
-          disabled={!familyId || isLoading || isRestoring}
-          placeholder="For example: Add my aunt Maryam, my mother's sister..."
-          className="w-full rounded-2xl border border-sepia bg-white px-5 py-4 pr-14 text-sm text-ink shadow-sm focus:outline-none focus:ring-1 focus:ring-gold disabled:bg-sand disabled:text-ink/35"
-        />
-        <button
-          type="button"
-          aria-label="Send request"
-          onClick={() => sendMessage()}
-          disabled={!familyId || !input.trim() || !aiProcessingConsent || isLoading || isRestoring}
-          className="absolute right-2 top-2 rounded-xl bg-ink p-3 text-white shadow-lg transition-all hover:bg-gold disabled:opacity-30"
         >
-          <Send size={18} />
-        </button>
+        <div className="mb-2 rounded-xl border border-sepia bg-white px-2 py-1.5 text-xs text-ink/65" data-testid="gemini-consent-summary">
+          <div className="flex items-center gap-2">
+            <label className="flex min-h-11 min-w-0 flex-1 cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                checked={aiProcessingConsent}
+                onChange={(event) => setAiProcessingConsent(event.target.checked)}
+                disabled={!familyId || isLoading || isRestoring}
+                className="size-5 shrink-0 accent-gold"
+              />
+              <span className="min-w-0">
+                <strong className="block text-ink">Send this request to Google Gemini</strong>
+                <span className="block text-[11px] text-ink/50">One-time approval for this message</span>
+              </span>
+            </label>
+            <button
+              type="button"
+              onClick={() => setShowConsentDetails(current => !current)}
+              className="min-h-11 shrink-0 rounded-lg px-2 text-[11px] font-bold text-gold-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink"
+              aria-expanded={showConsentDetails}
+              aria-controls="gemini-data-disclosure"
+            >
+              {showConsentDetails ? 'Hide details' : 'Read details'}
+            </button>
+          </div>
+          {showConsentDetails ? (
+            <p id="gemini-data-disclosure" className="max-h-32 overflow-y-auto overscroll-contain border-t border-sepia/60 px-1 pb-2 pt-2 text-[11px] leading-relaxed text-ink/60 sm:max-h-40">{agentDataDisclosureText}</p>
+          ) : null}
+        </div>
+        <div className="relative shrink-0">
+          <label htmlFor="family-agent-input" className="sr-only">Ask the family agent</label>
+          <input
+            id="family-agent-input"
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+              }
+            }}
+            disabled={!familyId || isLoading || isRestoring}
+            placeholder="Ask AI Helper…"
+            enterKeyHint="send"
+            className="min-h-12 w-full rounded-2xl border border-sepia bg-white px-4 py-3 pr-14 text-base text-ink shadow-sm focus:outline-none focus:ring-2 focus:ring-gold-ink disabled:bg-sand disabled:text-ink/35 sm:text-sm"
+          />
+          <button
+            type="button"
+            aria-label="Send request"
+            onClick={() => sendMessage()}
+            disabled={!familyId || !input.trim() || !aiProcessingConsent || isLoading || isRestoring}
+            className="absolute right-1.5 top-1/2 flex size-11 -translate-y-1/2 items-center justify-center rounded-xl bg-ink text-white shadow-lg transition-all hover:bg-gold-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink disabled:opacity-30"
+          >
+            <Send size={18} />
+          </button>
+        </div>
+        </div>
       </div>
 
       {activePlannerMessage?.planner && familyId ? (
-        <div ref={plannerDialogRef} tabIndex={-1} className="fixed inset-0 z-50 flex items-center justify-center bg-ink/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="AI gathering planner">
-          <section className="flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-[2rem] border border-sepia bg-white shadow-2xl">
-            <header className="flex items-center justify-between border-b border-sepia bg-sand px-6 py-5">
+        <BodyPortal>
+          <div
+            ref={plannerDialogRef}
+            tabIndex={-1}
+            className="mobile-sheet-overlay fixed inset-0 z-50 flex items-center justify-center bg-ink/45 p-0 backdrop-blur-sm sm:p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-label="AI gathering planner"
+            data-testid="ai-gathering-planner-sheet"
+          >
+            <section className="mobile-sheet-surface flex h-[100dvh] max-h-[100dvh] w-full max-w-xl flex-col overflow-hidden border-0 border-sepia bg-white shadow-2xl sm:h-auto sm:max-h-[92dvh] sm:rounded-[2rem] sm:border">
+            <header className="mobile-sheet-header sticky top-0 z-20 flex shrink-0 items-center justify-between border-b border-sepia bg-sand/95 px-4 pb-3 pt-[calc(0.75rem+env(safe-area-inset-top))] backdrop-blur sm:px-6 sm:py-5">
               <div>
-                <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-gold">AI Helper</p>
-                <h3 className="font-serif text-xl font-bold italic text-ink">
+                <p className="text-[11px] font-bold tracking-wide text-gold-ink">AI Helper</p>
+                <h3 className="font-serif text-lg font-bold italic text-ink sm:text-xl">
                   {activePlannerStage === 'details'
-                    ? 'Plan a gathering'
+                    ? 'Plan Gathering'
                     : activePlannerStage === 'review'
                       ? 'Review before saving'
                       : activePlannerStage === 'links'
@@ -1329,7 +1416,7 @@ export function Assistant({
                 type="button"
                 onClick={closeActivePlanner}
                 disabled={plannerBusy}
-                className="rounded-full p-1.5 hover:bg-sepia/30 disabled:opacity-40"
+                className="flex size-11 items-center justify-center rounded-full hover:bg-sepia/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink disabled:opacity-40"
                 aria-label="Close gathering planner"
               >
                 <X size={20} />
@@ -1368,8 +1455,9 @@ export function Assistant({
                 }
               }}
             />
-          </section>
-        </div>
+            </section>
+          </div>
+        </BodyPortal>
       ) : null}
     </div>
   );
