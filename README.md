@@ -40,6 +40,16 @@ npm run dev
 
 Open [http://localhost:4000](http://localhost:4000), register an account, and create the first family space. The development server binds to `127.0.0.1` by default.
 
+### One-command Windows setup
+
+From the extracted project folder, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Setup-And-Run.ps1
+```
+
+The script installs Node.js LTS through `winget` when Node.js is missing, installs the project dependencies, creates `.env` when necessary, starts the app, and opens [http://127.0.0.1:4000/](http://127.0.0.1:4000/). If `.env` already contains a Gemini key, the script uses it without displaying it; otherwise, it securely prompts for one.
+
 The AI Helper works only after each developer adds a server-side Gemini API key to the project-root `.env` file. Short setup:
 
 1. Sign in to the [Google AI Studio API Keys page](https://aistudio.google.com/app/apikey).
