@@ -96,8 +96,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('MemoriesRewards mobile archive', () => {
-  it('renders compact touch-safe tabs, memories, and reward content without changing data behavior', async () => {
-    const user = userEvent.setup();
+  it('renders the memory album first and keeps rewards reachable through the requested view', async () => {
     render(
       <MemoriesRewards
         familyId="family-1"
@@ -107,18 +106,23 @@ describe('MemoriesRewards mobile archive', () => {
       />,
     );
 
-    await screen.findByRole('heading', { name: 'Family memories' });
-    const memoriesTab = screen.getByRole('tab', { name: 'Memories' });
-    const rewardsTab = screen.getByRole('tab', { name: 'Rewards' });
-    expect(memoriesTab.className).toContain('min-h-11');
-    expect(rewardsTab.className).toContain('min-h-11');
+    await screen.findByRole('heading', { name: 'Your family memories, gathered by occasion.' });
     expect(screen.getByRole('button', { name: 'Refresh archive' }).className).toContain('size-11');
-    expect(screen.getByRole('button', { name: 'Add memory' }).className).toContain('min-h-11');
+    expect(screen.getByRole('button', { name: 'Add memory' }).className).toContain('size-14');
     expect(screen.getByText('Picnic story')).toBeTruthy();
 
-    await user.click(rewardsTab);
+    cleanup();
+    render(
+      <MemoriesRewards
+        familyId="family-1"
+        familyRole="owner"
+        currentUserId="user-1"
+        members={[{ id: 'member-1', name: 'Mariam' }]}
+        requestedView="rewards"
+      />,
+    );
+    await screen.findByRole('heading', { name: 'Points history' });
     expect(screen.getByText('120')).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Points history' })).toBeTruthy();
     expect(screen.getByText('Family tea example')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Demo only' }).className).toContain('min-h-11');
   });
@@ -136,17 +140,18 @@ describe('MemoriesRewards mobile archive', () => {
     await screen.findByRole('button', { name: 'Add memory' });
 
     await user.click(screen.getByRole('button', { name: 'Add memory' }));
+    await user.selectOptions(screen.getByLabelText('Gathering'), 'gathering-1');
     const title = screen.getByLabelText('Title');
     const note = screen.getByLabelText('Written memory');
     expect(title.className).toContain('text-base');
     expect(note.className).toContain('text-base');
     expect(screen.getByLabelText('Gathering').className).toContain('min-h-12');
     expect(screen.getByRole('button', { name: 'Cancel' }).className).toContain('min-h-11');
-    expect(screen.getByRole('button', { name: 'Save privately' }).className).toContain('min-h-11');
+    expect(screen.getByRole('button', { name: 'Save memory' }).className).toContain('min-h-11');
 
     await user.type(title, 'A new family story');
     await user.type(note, 'We spent a calm afternoon together.');
-    await user.click(screen.getByRole('button', { name: 'Save privately' }));
+    await user.click(screen.getByRole('button', { name: 'Save memory' }));
 
     await waitFor(() => expect(apiMocks.createMemory).toHaveBeenCalledTimes(1));
     expect(apiMocks.createMemory.mock.calls[0]?.[0]).toBe('gathering-1');

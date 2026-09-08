@@ -71,7 +71,8 @@ describe('Activities mobile experience', () => {
     expect(filters?.className.includes('hidden')).toBe(true);
     const toggle = screen.getByRole('button', { name: 'Filters' });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.getAllByRole('button', { name: 'Plan with AI' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Plan with SILAH' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Plan manually' })).toHaveLength(2);
   });
 
   it('opens filters, exposes removable active chips, and filters the result list', async () => {
@@ -103,7 +104,7 @@ describe('Activities mobile experience', () => {
     await waitFor(() => expect(screen.queryByText('Golden Park picnic')).toBeNull());
     expect(screen.getByText('1 result')).toBeTruthy();
 
-    await user.click(screen.getByRole('button', { name: 'Plan with AI' }));
+    await user.click(screen.getByRole('button', { name: 'Plan with SILAH' }));
     expect(onPlanActivity).toHaveBeenCalledTimes(1);
     expect(onPlanActivity).toHaveBeenCalledWith(activities[1]);
   });

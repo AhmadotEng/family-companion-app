@@ -1,14 +1,16 @@
 import { Bell, ChevronRight, HelpCircle, Languages, Settings, Shield, UserCircle } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { useLanguage } from '../i18n';
 import type { AuthUser } from '../types';
 
 export function More({ user }: { user: AuthUser }) {
+  const { language, toggleLanguage } = useLanguage();
   const menuItems = [
-    { icon: Shield, label: 'Privacy and safety' },
-    { icon: Bell, label: 'Notifications' },
-    { icon: Languages, label: 'Language: English only' },
-    { icon: Settings, label: 'Family settings' },
-    { icon: HelpCircle, label: 'Help and support' },
+    { icon: Shield, label: 'Privacy and safety', action: undefined },
+    { icon: Bell, label: 'Notifications', action: undefined },
+    { icon: Languages, label: language === 'en' ? 'Language: العربية' : 'اللغة: English', action: toggleLanguage },
+    { icon: Settings, label: 'Family settings', action: undefined },
+    { icon: HelpCircle, label: 'Help and support', action: undefined },
   ];
 
   return (
@@ -19,7 +21,7 @@ export function More({ user }: { user: AuthUser }) {
           <UserCircle size={42} strokeWidth={1.4} aria-hidden="true" className="hidden sm:block" />
         </div>
         <div className="min-w-0">
-          <h3 className="truncate font-serif text-xl font-bold italic text-ink sm:text-2xl">{user.displayName}</h3>
+          <h3 className="truncate font-serif text-xl font-bold text-ink sm:text-2xl">{user.displayName}</h3>
           <p className="mt-1 truncate text-sm text-ink/50 sm:text-xs">{user.email}</p>
         </div>
       </section>
@@ -29,13 +31,7 @@ export function More({ user }: { user: AuthUser }) {
           <button
             type="button"
             key={item.label}
-            onClick={() => {
-              if (item.label.includes('Language')) {
-                alert('The current prototype interface is English-only. Arabic localization is not connected yet.');
-              } else {
-                alert(`"${item.label}" is a visual placeholder and is not connected in the current prototype.`);
-              }
-            }}
+            onClick={item.action}
             className={cn(
               'group flex min-h-14 w-full min-w-0 items-center justify-between gap-3 px-4 py-2.5 text-left transition-colors hover:bg-sand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-gold-ink sm:min-h-16 sm:px-8 sm:py-4',
               index !== menuItems.length - 1 && 'border-b border-sepia',
@@ -53,8 +49,7 @@ export function More({ user }: { user: AuthUser }) {
       </section>
 
       <footer className="space-y-1.5 px-4 pb-6 text-center text-[11px] text-ink/35 sm:pb-12">
-        <p>UAE Family Companion · Development preview</p>
-        <p className="font-serif italic">“Heritage &amp; Harmony for every home”</p>
+        <p data-no-localize>AILAH</p>
       </footer>
     </div>
   );

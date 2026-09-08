@@ -15,13 +15,16 @@ import {
   Image as ImageIcon,
   LoaderCircle,
   LockKeyhole,
+  MapPin,
   NotebookPen,
+  Plus,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
   Sparkles,
   Trash2,
   Upload,
+  X,
 } from 'lucide-react';
 import { ApiError } from '../api/client';
 import {
@@ -51,6 +54,8 @@ interface MemoriesRewardsProps {
   currentUserId?: string;
   members: FamilyPerson[];
   refreshVersion?: number;
+  requestedView?: 'memories' | 'rewards';
+  viewRequestVersion?: number;
 }
 
 interface PendingUpload {
@@ -61,6 +66,78 @@ interface PendingUpload {
 }
 
 const blankRewards: RewardSummary = { balance: 0, entries: [], offers: [] };
+
+interface AlbumMemory {
+  id: string;
+  title: string;
+  note: string;
+  capturedAt: string;
+  gatheringId: string;
+  memoryType: MemoryType;
+  image?: string;
+}
+
+interface MemoryAlbum {
+  id: string;
+  title: string;
+  date: string;
+  location: string;
+  cover: string;
+  memories: AlbumMemory[];
+}
+
+const demoAlbums: MemoryAlbum[] = [
+  {
+    id: 'demo-qasr',
+    title: 'Grandparents’ Day at Qasr Al Hosn',
+    date: '18 January 2026',
+    location: 'Qasr Al Hosn, Abu Dhabi',
+    cover: '/assets/activity-qasr-al-hosn.png',
+    memories: [{
+      id: 'demo-qasr-photo',
+      title: 'Three generations together',
+      note: 'Grandfather showed the children where Abu Dhabi’s story began, then shared memories from his childhood.',
+      capturedAt: '2026-01-18T16:30:00+04:00',
+      gatheringId: 'demo-qasr',
+      memoryType: 'photo',
+      image: '/assets/activity-qasr-al-hosn.png',
+    }],
+  },
+  {
+    id: 'demo-louvre',
+    title: 'Family Museum Morning',
+    date: '12 April 2026',
+    location: 'Louvre Abu Dhabi',
+    cover: '/assets/activity-louvre-abu-dhabi.png',
+    memories: [{
+      id: 'demo-louvre-photo',
+      title: 'Under the dome',
+      note: 'Everyone chose one artwork to remember. The children loved the moving patterns of light most of all.',
+      capturedAt: '2026-04-12T11:00:00+04:00',
+      gatheringId: 'demo-louvre',
+      memoryType: 'photo',
+      image: '/assets/activity-louvre-abu-dhabi.png',
+    }],
+  },
+  {
+    id: 'demo-noor',
+    title: 'Cousins’ Picnic',
+    date: '24 May 2026',
+    location: 'Al Noor Island, Sharjah',
+    cover: '/assets/activity-al-noor-island.png',
+    memories: [{
+      id: 'demo-noor-photo',
+      title: 'A long afternoon together',
+      note: 'A simple picnic turned into hours of stories, games and plans for the next family day.',
+      capturedAt: '2026-05-24T16:00:00+04:00',
+      gatheringId: 'demo-noor',
+      memoryType: 'photo',
+      image: '/assets/activity-al-noor-island.png',
+    }],
+  },
+];
+
+const demoGatheringNames = new Map(demoAlbums.map(album => [album.id, album.title]));
 
 const memoryTypeOptions: Array<{
   value: MemoryType;
@@ -89,7 +166,7 @@ function localDateTimeValue(date = new Date()): string {
 function readableDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(document.documentElement.lang === 'ar' ? 'ar-AE' : 'en-GB', {
     day: 'numeric',
     month: 'short',
     year: 'numeric',
@@ -111,6 +188,15 @@ function personName(person: FamilyPerson): string {
 
 function errorMessage(caught: unknown, fallback: string): string {
   return caught instanceof ApiError ? caught.message : fallback;
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('The selected file could not be read.'));
+    reader.readAsDataURL(file);
+  });
 }
 
 function MemoryMedia({ memory }: { memory: MemoryRecord }) {
@@ -215,7 +301,7 @@ function MemoryCard({
           <CalendarDays size={14} aria-hidden="true" /> {gatheringTitle}
         </p>
       )}
-      {memory.note && <p className="whitespace-pre-wrap font-serif text-sm italic leading-relaxed text-ink/70">{memory.note}</p>}
+      {memory.note && <p className="whitespace-pre-wrap font-serif text-sm leading-relaxed text-ink/70">{memory.note}</p>}
       {memory.memoryType !== 'note' && <MemoryMedia memory={memory} />}
 
       <div className="flex flex-wrap items-center gap-2 border-t border-sepia/60 pt-3 text-[11px] text-ink/45 sm:gap-3 sm:pt-4">
@@ -290,10 +376,25 @@ function RewardOfferCard({
   );
 }
 
-export function MemoriesRewards({ familyId, familyRole, currentUserId, members, refreshVersion = 0 }: MemoriesRewardsProps) {
-  const [view, setView] = useState<'memories' | 'rewards'>('memories');
+export function MemoriesRewards({
+  familyId,
+  familyRole,
+  currentUserId,
+  members,
+  refreshVersion = 0,
+  requestedView,
+  viewRequestVersion = 0,
+}: MemoriesRewardsProps) {
+  const [view, setView] = useState<'memories' | 'rewards'>(requestedView ?? 'memories');
+
+  useEffect(() => {
+    if (requestedView) setView(requestedView);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewRequestVersion]);
   const [gatherings, setGatherings] = useState<PersistentGathering[]>([]);
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
+  const [localMemories, setLocalMemories] = useState<AlbumMemory[]>([]);
+  const [selectedAlbum, setSelectedAlbum] = useState<MemoryAlbum | null>(null);
   const [rewards, setRewards] = useState<RewardSummary>(blankRewards);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -317,6 +418,17 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
   const [deletingMemoryId, setDeletingMemoryId] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const requestVersion = useRef(0);
+  const localMemoryStorageKey = `ailah-demo-memories:${familyId}`;
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(localMemoryStorageKey);
+      const parsed = stored ? JSON.parse(stored) as AlbumMemory[] : [];
+      setLocalMemories(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setLocalMemories([]);
+    }
+  }, [localMemoryStorageKey]);
 
   const loadData = useCallback(async (quiet = false) => {
     const version = ++requestVersion.current;
@@ -334,7 +446,7 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
       setGatherings(completedGatherings);
       setMemories(memoryResponse.memories);
       setRewards(rewardResponse);
-      setGatheringId(previous => previous || completedGatherings[0]?.id || '');
+      setGatheringId(previous => previous || completedGatherings[0]?.id || demoAlbums[0].id);
     } catch (caught) {
       if (version === requestVersion.current) {
         setLoadError(errorMessage(caught, 'Memories and rewards could not be loaded.'));
@@ -350,7 +462,7 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
   useEffect(() => {
     setPendingUpload(null);
     setSuccess('');
-    setGatheringId('');
+    setGatheringId(demoAlbums[0].id);
     void loadData();
     return () => {
       requestVersion.current += 1;
@@ -428,6 +540,36 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
       return;
     }
 
+    if (demoGatheringNames.has(gatheringId)) {
+      if (file && file.size > 3 * 1024 * 1024) {
+        setFormError('For this demo album, choose a file smaller than 3 MB.');
+        return;
+      }
+      setSaving(true);
+      try {
+        const savedMemory: AlbumMemory = {
+          id: crypto.randomUUID(),
+          title: title.trim(),
+          note: note.trim(),
+          capturedAt: draft.capturedAt,
+          gatheringId,
+          memoryType,
+          ...(file ? { image: await fileToDataUrl(file) } : {}),
+        };
+        const nextMemories = [savedMemory, ...localMemories];
+        window.localStorage.setItem(localMemoryStorageKey, JSON.stringify(nextMemories));
+        setLocalMemories(nextMemories);
+        resetForm();
+        setFormOpen(false);
+        setSuccess('Your memory was saved and added to the family album.');
+      } catch (caught) {
+        setFormError(errorMessage(caught, 'The memory could not be saved on this device.'));
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
     setSaving(true);
     try {
       const created = await memoriesRewardsApi.createMemory(gatheringId, draft);
@@ -499,12 +641,21 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
     }
   };
 
+  const personalAlbum: MemoryAlbum | null = localMemories.length ? {
+    id: 'my-added-memories',
+    title: 'My added memories',
+    date: 'Saved on this device',
+    location: 'Family album',
+    cover: localMemories.find(memory => memory.image)?.image || '/assets/ailah-mark.png',
+    memories: localMemories,
+  } : null;
+
   if (loading) {
     return (
       <div className="flex min-h-40 items-center justify-center rounded-2xl border border-sepia bg-white sm:min-h-72 sm:rounded-[2rem]">
         <div className="text-center">
           <LoaderCircle className="mx-auto animate-spin text-gold" size={28} />
-          <p className="mt-3 font-serif italic text-ink/60">Opening the private family archive…</p>
+          <p className="mt-3 font-serif text-ink/60">Opening the private family archive…</p>
         </div>
       </div>
     );
@@ -513,26 +664,7 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
   return (
     <div className="min-w-0 space-y-4 sm:space-y-7">
       <div className="flex items-center justify-between gap-3">
-        <div className="grid min-w-0 flex-1 grid-cols-2 rounded-xl border border-sepia bg-white p-1 shadow-sm sm:flex sm:flex-none sm:rounded-2xl" role="tablist" aria-label="Family archive sections">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === 'memories'}
-            onClick={() => setView('memories')}
-            className={cn('min-h-11 rounded-lg px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink sm:rounded-xl sm:px-5', view === 'memories' ? 'bg-ink text-white' : 'text-ink/55')}
-          >
-            Memories
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === 'rewards'}
-            onClick={() => setView('rewards')}
-            className={cn('min-h-11 rounded-lg px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink sm:rounded-xl sm:px-5', view === 'rewards' ? 'bg-ink text-white' : 'text-ink/55')}
-          >
-            Rewards
-          </button>
-        </div>
+        <div className="min-w-0 flex-1" />
         <button
           type="button"
           onClick={() => void loadData(true)}
@@ -562,31 +694,50 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
 
       {view === 'memories' ? (
         <>
-          <section className="overflow-hidden rounded-2xl border border-sepia bg-ink text-white shadow-lg sm:rounded-[2rem]">
-            <div className="flex flex-col justify-between gap-3 p-4 sm:flex-row sm:items-center sm:gap-6 sm:p-7">
+          <section className="overflow-hidden rounded-3xl border border-sepia bg-white p-5 shadow-sm sm:rounded-[2rem] sm:p-7">
+            <div className="flex items-center justify-between gap-4">
               <div>
-                <p className="text-xs font-semibold text-gold">Private family archive</p>
-                <h3 className="mt-1 font-serif text-lg italic sm:mt-2 sm:text-2xl">Preserve what happened after a gathering</h3>
-                <p className="mt-1.5 max-w-lg text-[11px] leading-relaxed text-white/60 sm:mt-2 sm:text-xs">
-                  Every memory is stored against a real gathering and follows the visibility you choose. Media is fetched through your signed-in session.
-                </p>
+                <p className="text-xs font-semibold text-gold-ink">Private family archive</p>
+                <h3 className="mt-1 font-serif text-xl font-bold sm:text-2xl">Your family memories, gathered by occasion.</h3>
               </div>
               <button
                 type="button"
                 onClick={() => setFormOpen(open => !open)}
-                disabled={gatherings.length === 0 || Boolean(pendingUpload)}
-                className="min-h-11 shrink-0 rounded-xl bg-gold-ink px-5 text-xs font-semibold text-white hover:bg-white hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/40 sm:rounded-2xl"
+                disabled={Boolean(pendingUpload)}
+                aria-label={formOpen ? 'Close form' : 'Add memory'}
+                title={formOpen ? 'Close form' : 'Add memory'}
+                className="flex size-14 shrink-0 items-center justify-center rounded-full bg-ink text-white shadow-lg transition-transform hover:scale-105 hover:bg-gold-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {formOpen ? 'Close form' : 'Add memory'}
+                {formOpen ? <X size={22} /> : <Plus size={24} />}
               </button>
             </div>
           </section>
 
-          {gatherings.length === 0 && (
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 sm:p-5">
-              Create a persisted gathering first. Memories cannot be attached to local or sample calendar entries.
+          <section className="space-y-3 sm:space-y-4" aria-labelledby="previous-memories-heading">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 id="previous-memories-heading" className="font-serif text-xl font-bold sm:text-2xl">Previous memories</h3>
+                <p className="mt-1 text-sm text-ink/65">Open an album to revisit the photos and stories.</p>
+              </div>
+              <span className="shrink-0 text-xs font-semibold text-gold-ink">{`${demoAlbums.length + (personalAlbum ? 1 : 0)} albums`}</span>
             </div>
-          )}
+            <div className="grid gap-3 sm:grid-cols-2 sm:gap-4">
+              {[...(personalAlbum ? [personalAlbum] : []), ...demoAlbums].map(album => (
+                <button key={album.id} type="button" onClick={() => setSelectedAlbum(album)} className="group overflow-hidden rounded-2xl border border-sepia bg-white text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-gold hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink sm:rounded-3xl">
+                  <div className="relative h-40 overflow-hidden bg-sand sm:h-44">
+                    <img src={album.cover} alt="" className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+                    <span className="absolute bottom-3 right-3 rounded-full bg-ink/80 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur">{`${album.memories.length} ${album.memories.length === 1 ? 'memory' : 'memories'}`}</span>
+                  </div>
+                  <div className="p-4">
+                    <h4 className="line-clamp-1 font-serif text-lg font-bold text-ink">{album.title}</h4>
+                    <p className="mt-1 text-xs font-medium text-ink/65">{album.date}</p>
+                    <p className="mt-2 flex items-center gap-1.5 text-xs text-ink/65"><MapPin size={13} className="text-gold" /> {album.location}</p>
+                    <span className="mt-3 inline-flex text-xs font-bold text-gold-ink">View album</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
 
           {pendingUpload && (
             <section className="rounded-2xl border border-amber-300 bg-amber-50 p-4 sm:p-5">
@@ -616,10 +767,14 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
           )}
 
           {formOpen && (
-            <form onSubmit={saveMemory} className="min-w-0 space-y-4 rounded-2xl border border-sepia bg-white p-4 shadow-sm sm:space-y-6 sm:rounded-[2rem] sm:p-7">
-              <div>
-                <p className="text-xs font-semibold text-gold-ink">New memory</p>
-                <h3 className="mt-1 font-serif text-xl italic sm:mt-2 sm:text-2xl">What would you like to preserve?</h3>
+            <div className="fixed inset-0 z-[75] flex items-end bg-ink/55 backdrop-blur-sm sm:items-center sm:justify-center sm:p-5" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !saving) setFormOpen(false); }}>
+            <form onSubmit={saveMemory} className="max-h-[92dvh] w-full min-w-0 max-w-2xl space-y-4 overflow-y-auto rounded-t-3xl border border-sepia bg-white p-4 shadow-2xl sm:space-y-6 sm:rounded-[2rem] sm:p-7">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold text-gold-ink">New memory</p>
+                  <h3 className="mt-1 font-serif text-xl sm:mt-2 sm:text-2xl">What would you like to preserve?</h3>
+                </div>
+                <button type="button" onClick={() => setFormOpen(false)} aria-label="Close form" className="flex size-11 shrink-0 items-center justify-center rounded-full hover:bg-sand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink"><X size={20} /></button>
               </div>
 
               <div>
@@ -632,7 +787,10 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
                     onChange={event => setGatheringId(event.target.value)}
                     className="min-h-12 min-w-0 w-full max-w-full appearance-none rounded-xl border border-sepia bg-sand/40 px-4 py-2.5 pr-10 text-base outline-none focus:border-gold-ink focus:ring-2 focus:ring-gold-ink sm:text-sm"
                   >
-                    <option value="">Select a persisted gathering</option>
+                    <option value="">Select a gathering</option>
+                    {demoAlbums.map(album => (
+                      <option key={album.id} value={album.id}>{album.title}</option>
+                    ))}
                     {gatherings.map(gathering => (
                       <option key={gathering.id} value={gathering.id}>{gathering.title} — {readableDate(gathering.startAt)}</option>
                     ))}
@@ -764,21 +922,6 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
                 )}
               </div>
 
-              <label className="flex min-h-14 cursor-pointer items-start gap-3 rounded-2xl border border-sepia p-4 sm:p-5">
-                <input
-                  type="checkbox"
-                  checked={aiProcessingAllowed}
-                  onChange={event => setAiProcessingAllowed(event.target.checked)}
-                  className="mt-1 size-4 shrink-0 accent-gold"
-                />
-                <span>
-                  <span className="flex items-center gap-2 text-xs font-bold text-ink"><Bot size={15} /> Allow AI processing for this memory</span>
-                  <span className="mt-1 block text-[11px] leading-relaxed text-ink/50">
-                    Off by default. This stores your consent choice; no face recognition is used and this version does not run memory analysis.
-                  </span>
-                </span>
-              </label>
-
               {formError && (
                 <p role="alert" className="flex items-start gap-2 rounded-xl bg-red-50 p-3 text-xs text-red-700"><AlertCircle className="mt-0.5 shrink-0" size={15} /> {formError}</p>
               )}
@@ -798,47 +941,36 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
                 </button>
                 <button
                   type="submit"
-                  disabled={saving || gatherings.length === 0}
+                  disabled={saving}
                   className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-ink px-4 text-xs font-semibold text-white hover:bg-gold-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-50 sm:px-6"
                 >
                   {saving ? <LoaderCircle className="animate-spin" size={15} /> : <ShieldCheck size={15} />}
-                  {saving ? (uploadProgress > 0 ? `Uploading ${uploadProgress}%` : 'Saving…') : 'Save privately'}
+                  {saving ? (uploadProgress > 0 ? `Uploading ${uploadProgress}%` : 'Saving…') : 'Save memory'}
                 </button>
               </div>
             </form>
+            </div>
           )}
 
-          <section className="space-y-3 sm:space-y-4">
+          {memories.length > 0 && <section className="space-y-3 sm:space-y-4">
             <div className="flex min-h-11 items-center justify-between gap-3">
-              <h3 className="font-serif text-xl italic sm:text-2xl">Family memories</h3>
-              <span className="shrink-0 text-[11px] text-ink/45">{memories.length} visible to you</span>
+              <h3 className="font-serif text-xl sm:text-2xl">Saved family memories</h3>
+              <span className="shrink-0 text-xs text-ink/65">{memories.length} saved</span>
             </div>
-            {memories.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-sepia bg-white p-6 text-center sm:rounded-[2rem] sm:p-10">
-                <NotebookPen className="mx-auto text-gold" size={28} />
-                <h4 className="mt-4 font-serif text-xl italic">No permitted memories yet</h4>
-                <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-ink/50">Add the first memory after a real gathering. Private memories belonging to other people do not appear here.</p>
-              </div>
-            ) : (
-              <div className="grid gap-3 sm:gap-5">
-                {memories.map(memory => (
-                  <div key={memory.id}>
-                    <MemoryCard
-                      memory={memory}
-                      gatheringTitle={memory.gatheringId ? gatheringNames.get(memory.gatheringId) : undefined}
-                      canDelete={memory.createdByUserId === currentUserId || familyRole === 'owner' || familyRole === 'admin'}
-                      deleting={deletingMemoryId === memory.id}
-                      onDelete={() => void deleteMemory(memory)}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <p className="flex items-center justify-center gap-2 text-center text-[11px] leading-relaxed text-ink/40">
-            <ShieldCheck size={13} /> Media access is authorized on every request. No face recognition or public gallery is enabled.
-          </p>
+            <div className="grid gap-3 sm:gap-5">
+              {memories.map(memory => (
+                <div key={memory.id}>
+                  <MemoryCard
+                    memory={memory}
+                    gatheringTitle={memory.gatheringId ? gatheringNames.get(memory.gatheringId) : undefined}
+                    canDelete={memory.createdByUserId === currentUserId || familyRole === 'owner' || familyRole === 'admin'}
+                    deleting={deletingMemoryId === memory.id}
+                    onDelete={() => void deleteMemory(memory)}
+                  />
+                </div>
+              ))}
+            </div>
+          </section>}
         </>
       ) : (
         <>
@@ -855,7 +987,7 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
 
           <section className="space-y-3 sm:space-y-4">
             <div className="flex min-h-11 items-center justify-between gap-3">
-              <h3 className="font-serif text-xl italic sm:text-2xl">Points history</h3>
+              <h3 className="font-serif text-xl sm:text-2xl">Points history</h3>
               <span className="text-[11px] text-ink/45">Latest {rewards.entries.length}</span>
             </div>
             {rewards.entries.length === 0 ? (
@@ -879,7 +1011,7 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
 
           <section className="space-y-3 sm:space-y-4">
             <div>
-              <h3 className="font-serif text-xl italic sm:text-2xl">Reward offers</h3>
+              <h3 className="font-serif text-xl sm:text-2xl">Reward offers</h3>
               <p className="mt-1 text-xs text-ink/45">Prototype examples are labelled and cannot be redeemed.</p>
             </div>
             <div className="grid gap-3 sm:grid-cols-2 sm:gap-4">
@@ -896,6 +1028,35 @@ export function MemoriesRewards({ familyId, familyRole, currentUserId, members, 
             Rewards shown as “prototype examples” are not vouchers, do not represent partner inventory, and never trigger a redemption request.
           </div>
         </>
+      )}
+
+      {selectedAlbum && (
+        <div className="fixed inset-0 z-[80] flex items-end bg-ink/55 backdrop-blur-sm sm:items-center sm:justify-center sm:p-5" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setSelectedAlbum(null); }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="memory-album-heading" className="flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl border border-sepia bg-white shadow-2xl sm:rounded-[2rem]">
+            <header className="flex shrink-0 items-center justify-between gap-4 border-b border-sepia bg-sand px-4 py-3 sm:px-6 sm:py-4">
+              <div className="min-w-0">
+                <h3 id="memory-album-heading" className="truncate font-serif text-xl font-bold">{selectedAlbum.title}</h3>
+                <p className="mt-1 truncate text-xs text-ink/65">{selectedAlbum.date} · {selectedAlbum.location}</p>
+              </div>
+              <button type="button" onClick={() => setSelectedAlbum(null)} aria-label="Close album" className="flex size-11 shrink-0 items-center justify-center rounded-full hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink"><X size={20} /></button>
+            </header>
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
+              {selectedAlbum.memories.map(memory => (
+                <article key={memory.id} className="overflow-hidden rounded-2xl border border-sepia bg-white shadow-sm">
+                  {memory.image && memory.memoryType === 'photo' && <img src={memory.image} alt={memory.title} className="max-h-[28rem] w-full bg-sand object-cover" />}
+                  {memory.image && memory.memoryType === 'video' && <video src={memory.image} controls className="max-h-[28rem] w-full bg-ink" />}
+                  {memory.image && memory.memoryType === 'audio' && <div className="bg-sand p-5"><audio src={memory.image} controls className="w-full" /></div>}
+                  {!memory.image && <div className="flex min-h-32 items-center justify-center bg-sand"><NotebookPen size={34} className="text-gold" /></div>}
+                  <div className="p-4 sm:p-5">
+                    <h4 className="font-serif text-lg font-bold">{memory.title}</h4>
+                    <p className="mt-1 text-xs text-ink/60">{readableDate(memory.capturedAt)}</p>
+                    {memory.note && <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-ink/75">{memory.note}</p>}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        </div>
       )}
     </div>
   );

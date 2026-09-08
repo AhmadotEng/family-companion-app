@@ -114,7 +114,7 @@ export function createGatheringPlannerDraft({
     locationName: prefill?.locationName.slice(0, 300) ?? '',
     notes: prefill?.notes?.slice(0, 2_000) ?? '',
     memberIds: [...new Set(prefill?.memberIds ?? [])].filter(id => permittedIds.has(id)),
-    channel: prefill?.invitationChannel ?? 'share_link',
+    channel: 'share_link',
   };
 }
 

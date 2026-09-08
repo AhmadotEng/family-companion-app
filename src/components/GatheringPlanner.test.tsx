@@ -110,7 +110,7 @@ describe('GatheringPlanner', () => {
     expect((screen.getByRole('checkbox', { name: /Dad/ }) as HTMLInputElement).checked).toBe(true);
     expect((screen.getByRole('checkbox', { name: /Anas/ }) as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByText('not-visible')).toBeNull();
-    expect((screen.getByLabelText('Sharing option') as HTMLSelectElement).value).toBe('share_link');
+    expect(screen.queryByLabelText('Sharing option')).toBeNull();
     expect(screen.getByText(/Prepared by AI/).textContent).toContain('Nothing will be sent automatically');
     expect(screen.getByText(/planning label only/).textContent).toContain('not been verified');
     expect((screen.getByLabelText('Title') as HTMLInputElement).className).toContain('text-base');
@@ -171,7 +171,6 @@ describe('GatheringPlanner', () => {
     await user.selectOptions(screen.getByLabelText('Type'), 'Visit');
     await user.type(screen.getByLabelText('Notes (optional)'), 'Edited note');
     await user.click(screen.getByRole('checkbox', { name: /Anas/ }));
-    await user.selectOptions(screen.getByLabelText('Sharing option'), 'whatsapp');
     expect((title as HTMLInputElement).value).toBe('Edited family outing');
     expect((purpose as HTMLInputElement).value).toBe('Edited purpose');
     expect((screen.getByLabelText('Date') as HTMLInputElement).value).toBe('2099-09-13');
@@ -180,7 +179,7 @@ describe('GatheringPlanner', () => {
     expect((screen.getByLabelText('Type') as HTMLSelectElement).value).toBe('Visit');
     expect((screen.getByLabelText('Notes (optional)') as HTMLTextAreaElement).value).toBe('Edited note');
     expect((screen.getByRole('checkbox', { name: /Anas/ }) as HTMLInputElement).checked).toBe(false);
-    expect((screen.getByLabelText('Sharing option') as HTMLSelectElement).value).toBe('whatsapp');
+    expect(screen.queryByLabelText('Sharing option')).toBeNull();
 
     await user.click(screen.getByRole('button', { name: 'Review' }));
     expect(screen.getByText('Final confirmation required')).toBeTruthy();
@@ -188,7 +187,7 @@ describe('GatheringPlanner', () => {
     expect(screen.getByText('Visit')).toBeTruthy();
     expect(screen.getByText('Edited note')).toBeTruthy();
     expect(screen.getByText('Dad')).toBeTruthy();
-    expect(screen.getByText('WhatsApp share buttons')).toBeTruthy();
+    expect(screen.getByText('Copyable private links')).toBeTruthy();
     expect(apiMocks.createGathering).not.toHaveBeenCalled();
     expect(apiMocks.prepareInvitations).not.toHaveBeenCalled();
 
@@ -332,7 +331,7 @@ describe('GatheringPlanner', () => {
     expect(onBusyChange.mock.calls.map(call => call[0])).toEqual([true, false, true, false]);
   });
 
-  it('exposes copy, preview, and WhatsApp only as explicit user actions', async () => {
+  it('exposes copy and preview while omitting duplicate WhatsApp sharing', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const open = vi.spyOn(window, 'open').mockImplementation(() => null);
     apiMocks.createGathering.mockResolvedValue({ gathering: savedGathering() });
@@ -375,12 +374,7 @@ describe('GatheringPlanner', () => {
     expect(writeText).toHaveBeenCalledWith('https://family.example/invite/private-absolute-token');
     expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy();
     expect(open).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole('button', { name: 'Open WhatsApp' }));
-    expect(open).toHaveBeenCalledOnce();
-    expect(open.mock.calls[0][0]).toMatch(/^https:\/\/wa\.me\/\?text=/);
-    expect(decodeURIComponent(String(open.mock.calls[0][0]))).toContain('Golden Park family outing');
-    expect(decodeURIComponent(String(open.mock.calls[0][0]))).toContain('https://family.example/invite/private-absolute-token');
+    expect(screen.queryByRole('button', { name: 'Open WhatsApp' })).toBeNull();
   });
 
   it('shows a recoverable error when clipboard permission is denied', async () => {

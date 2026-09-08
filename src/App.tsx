@@ -16,6 +16,7 @@ import { Activities } from './screens/Activities';
 import { FamilyTree } from './screens/FamilyTree';
 import { Calendar, type CalendarFocusTarget } from './screens/Calendar';
 import { MemoriesRewards } from './screens/MemoriesRewards';
+import { memoriesRewardsApi } from './api/memoriesRewards';
 import { More } from './screens/More';
 import { PublicInvitationScreen } from './screens/PublicInvitation';
 import { AuthScreen } from './auth/AuthScreen';
@@ -30,13 +31,14 @@ import { getAgentResultDestination } from './lib/agentPresentation';
 import { clearAllManualGatheringRetryStates } from './lib/manualGatheringRetry';
 import type { AgentActionCompletion } from './screens/Assistant';
 import { AuthSession, FamilyContext, FamilyMember, Gathering } from './types';
+import { useLanguage } from './i18n';
 
 function FullPageStatus({ message }: { message: string }) {
   return (
     <main className="standalone-page min-h-[100dvh] bg-sand flex items-center justify-center p-6">
       <div className="w-full min-w-0 max-w-md rounded-3xl border border-sepia bg-white px-5 py-7 text-center shadow-xl sm:rounded-[2rem] sm:px-10 sm:py-9">
         <LoaderCircle className="animate-spin text-gold mx-auto" size={30} />
-        <p className="font-serif italic text-lg mt-4">{message}</p>
+        <p className="font-serif text-lg mt-4">{message}</p>
       </div>
     </main>
   );
@@ -74,6 +76,7 @@ function toHomeGathering(gathering: PersistentGathering): Gathering {
 }
 
 function AuthenticatedApp() {
+  const { t } = useLanguage();
   const [activeTab, setActiveTab] = useState('home');
   const [session, setSession] = useState<AuthSession | null>(null);
   const [activeFamilyId, setActiveFamilyId] = useState<string | null>(null);
@@ -85,6 +88,9 @@ function AuthenticatedApp() {
   const [calendarRefreshVersion, setCalendarRefreshVersion] = useState(0);
   const [calendarFocusTarget, setCalendarFocusTarget] = useState<CalendarFocusTarget | null>(null);
   const [archiveRefreshVersion, setArchiveRefreshVersion] = useState(0);
+  const [rewardPoints, setRewardPoints] = useState<number | null>(null);
+  const [archiveViewVersion, setArchiveViewVersion] = useState(0);
+  const [assistantReturnTab, setAssistantReturnTab] = useState('home');
   const [heritageLocationSettingsRequested, setHeritageLocationSettingsRequested] = useState(false);
   const [booting, setBooting] = useState(true);
   const [contextLoading, setContextLoading] = useState(false);
@@ -186,7 +192,7 @@ function AuthenticatedApp() {
       .catch(caught => {
         if (!current) return;
         if (!(caught instanceof ApiError) || caught.status !== 401) {
-          setContextError(caught instanceof ApiError ? caught.message : 'Unable to reach the Family Companion server.');
+          setContextError(caught instanceof ApiError ? caught.message : 'Unable to reach the AILAH server.');
         }
       })
       .finally(() => {
@@ -284,6 +290,12 @@ function AuthenticatedApp() {
     }
   };
 
+  const openMemories = useCallback(() => {
+    setArchiveViewVersion(version => version + 1);
+    setActiveTab('archive');
+  }, []);
+  void openMemories;
+
   const navigateToAssistant = (presetText: string) => {
     setAssistantPreset(presetText);
     setActiveTab('assistant');
@@ -307,6 +319,35 @@ function AuthenticatedApp() {
   }, []);
 
   const currentFamilyId = familyContext?.family.id || activeFamilyId || '';
+
+  useEffect(() => {
+    if (!currentFamilyId) {
+      setRewardPoints(null);
+      return;
+    }
+    let current = true;
+    memoriesRewardsApi.getRewards(currentFamilyId)
+      .then(summary => {
+        if (current) setRewardPoints(summary.balance);
+      })
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, [currentFamilyId, archiveRefreshVersion]);
+
+  const openRewards = useCallback(() => {
+    setArchiveViewVersion(version => version + 1);
+    setActiveTab('rewards');
+  }, []);
+
+  const toggleAssistant = useCallback(() => {
+    setActiveTab(current => {
+      if (current === 'assistant') return assistantReturnTab;
+      setAssistantReturnTab(current);
+      return 'assistant';
+    });
+  }, [assistantReturnTab]);
   const currentMemberId = familyContext?.currentUser.linkedMemberId;
   const homeGatherings = useMemo(() => persistentGatherings.map(toHomeGathering), [persistentGatherings]);
 
@@ -328,8 +369,18 @@ function AuthenticatedApp() {
           <Activities
             members={members}
             onPlanActivity={activity => navigateToAssistant(
-              `Create a reconnection plan using the sample activity "${activity.title}" in ${activity.emirate}. Ask me who should join, the date, budget, and accessibility needs before proposing it.`,
+              `Help me plan “${activity.title}” at ${activity.location} in ${activity.emirate}. Ask who should join and what date works.`,
             )}
+            onPlanManually={activity => openGatheringDraftFromPlan({
+              sourcePlanId: `activity-${activity.id}`,
+              sourcePlanTitle: activity.title,
+              title: activity.title,
+              purpose: `Family time at ${activity.location}`,
+              type: activity.category,
+              locationName: `${activity.location}, ${activity.emirate}`,
+              notes: `${activity.description}\nSuggested duration: ${activity.estimatedDuration}.`,
+              memberIds: [],
+            })}
           />
         );
       case 'tree':
@@ -359,6 +410,18 @@ function AuthenticatedApp() {
             focusTarget={calendarFocusTarget}
           />
         );
+      case 'rewards':
+        return (
+          <MemoriesRewards
+            familyId={currentFamilyId}
+            familyRole={familyContext?.family.role}
+            currentUserId={session?.user.id}
+            members={members}
+            refreshVersion={archiveRefreshVersion}
+            requestedView="rewards"
+            viewRequestVersion={archiveViewVersion}
+          />
+        );
       case 'archive':
         return (
           <MemoriesRewards
@@ -367,6 +430,8 @@ function AuthenticatedApp() {
             currentUserId={session?.user.id}
             members={members}
             refreshVersion={archiveRefreshVersion}
+            requestedView="memories"
+            viewRequestVersion={archiveViewVersion}
           />
         );
       case 'more':
@@ -384,7 +449,7 @@ function AuthenticatedApp() {
       <main className="standalone-page min-h-[100dvh] bg-sand flex items-center justify-center p-6">
         <section className="w-full min-w-0 max-w-md rounded-3xl border border-sepia bg-white p-5 text-center shadow-xl sm:rounded-[2rem] sm:p-8">
           <ShieldAlert className="text-gold mx-auto" size={32} />
-          <h1 className="font-serif italic text-2xl mt-4">No family space assigned</h1>
+          <h1 className="font-serif text-2xl mt-4">No family space assigned</h1>
           <p className="text-sm text-ink/60 mt-3">This account is valid, but it is not linked to a family yet. Ask a family administrator to add it.</p>
           <button onClick={handleLogout} className="mt-6 min-h-11 rounded-xl px-4 text-sm font-semibold text-gold-ink hover:bg-sand hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink">Sign out</button>
         </section>
@@ -399,7 +464,7 @@ function AuthenticatedApp() {
       <main className="standalone-page min-h-[100dvh] bg-sand flex items-center justify-center p-6">
         <section className="w-full min-w-0 max-w-md rounded-3xl border border-sepia bg-white p-5 text-center shadow-xl sm:rounded-[2rem] sm:p-8">
           <ShieldAlert className="text-red-500 mx-auto" size={32} />
-          <h1 className="font-serif italic text-2xl mt-4">Family data could not load</h1>
+          <h1 className="font-serif text-2xl mt-4">Family data could not load</h1>
           <p role="alert" className="mt-3 break-words text-sm text-ink/60">{contextError}</p>
           <div className="mt-6 flex flex-wrap justify-center gap-3 sm:gap-4">
             <button onClick={refreshContext} className="flex min-h-11 items-center gap-2 rounded-xl bg-ink px-5 text-sm font-semibold text-white"><RefreshCw size={14} /> Retry</button>
@@ -411,12 +476,13 @@ function AuthenticatedApp() {
   }
 
   const titles: Record<string, string> = {
-    home: 'Dashboard',
-    assistant: 'AI Helper',
+    home: 'Home',
+    assistant: 'SILAH',
     activities: 'Activities',
-    tree: 'Heritage',
+    tree: 'Family',
     calendar: 'Gatherings',
-    archive: 'Memories and rewards',
+    archive: 'Memories',
+    rewards: 'Rewards',
     more: 'Profile and account'
   };
 
@@ -425,10 +491,13 @@ function AuthenticatedApp() {
       <Layout
         activeTab={activeTab}
         setActiveTab={setActiveTab}
-        title={titles[activeTab]}
+        title={t(titles[activeTab])}
         onSignOut={handleLogout}
         onOpenLocationSettings={openHeritageLocationSettings}
         accountName={session.user.displayName}
+        rewardPoints={rewardPoints ?? undefined}
+        onOpenRewards={openRewards}
+        onToggleAssistant={toggleAssistant}
       >
         {contextError && (
           <div role="alert" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900 flex items-center justify-between gap-4">

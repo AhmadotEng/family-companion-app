@@ -12,7 +12,6 @@ import {
   Link2,
   LoaderCircle,
   MapPin,
-  MessageCircle,
   Plus,
   RefreshCw,
   Rows3,
@@ -21,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { addDays, addMonths, eachDayOfInterval, endOfMonth, format, startOfMonth, startOfWeek, subMonths } from 'date-fns';
+import { arSA, enUS } from 'date-fns/locale';
 import { AnimatePresence, motion } from 'motion/react';
 import { ApiError } from '../api/client';
 import { engagementApi } from '../api/engagement';
@@ -37,6 +37,7 @@ import {
 } from '../lib/manualGatheringRetry';
 import { useModalFocusTrap } from '../lib/modalFocus';
 import { cn } from '../lib/utils';
+import { useLanguage } from '../i18n';
 import type { FamilyMember, FamilyRole } from '../types';
 
 interface CalendarProps {
@@ -57,7 +58,6 @@ export interface CalendarFocusTarget {
   startAt: string;
 }
 
-type InvitationChannel = 'share_link' | 'whatsapp';
 type CalendarViewMode = 'agenda' | 'month';
 
 const mobileCalendarQuery = '(max-width: 767px)';
@@ -116,11 +116,9 @@ function StatusPill({ status }: { status: RsvpStatus | PersistentGathering['stat
 
 function PreparedLinks({
   invitations,
-  gathering,
   deliveryNotice,
 }: {
   invitations: PreparedInvitation[];
-  gathering: PersistentGathering;
   deliveryNotice: string;
 }) {
   const [copiedMemberId, setCopiedMemberId] = useState('');
@@ -136,21 +134,12 @@ function PreparedLinks({
       setCopyError('The browser blocked clipboard access. Open the link and copy it from the address bar.');
     }
   };
-  const openWhatsApp = (invitationUrl: string) => {
-    // Build this client-side so the shared message always contains an absolute
-    // URL, including when an older server returned a relative WhatsApp link.
-    const message = `Family gathering invitation: ${gathering.title} on ${formatDubaiDateTime(gathering.startAt, 'short')}. Please RSVP: ${invitationUrl}`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
-  };
-
   return (
     <div className="space-y-4">
       <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-xs text-blue-900">
         <p className="font-bold flex items-center gap-2"><Info size={14} /> Links prepared, not sent</p>
         <p className="mt-1 leading-relaxed">{deliveryNotice}</p>
-        {window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? (
-          <p className="mt-2 font-medium">Localhost links normally work only on this computer. Deploy the app before sharing with another device.</p>
-        ) : null}
+        <p className="mt-2 font-medium">Family members who use AILAH will also receive an in-app RSVP notification.</p>
       </div>
       <div className="space-y-2">
         {invitations.map(invitation => {
@@ -169,11 +158,6 @@ function PreparedLinks({
                     <a href={invitationUrl} target="_blank" rel="noreferrer" className="flex min-h-11 items-center gap-1.5 rounded-lg border border-sepia px-3 text-xs font-semibold hover:border-gold">
                       <ExternalLink size={12} /> Preview
                     </a>
-                    {invitation.whatsappUrl ? (
-                      <button type="button" onClick={() => openWhatsApp(invitationUrl)} className="flex min-h-11 items-center gap-1.5 rounded-lg border border-green-200 bg-green-50 px-3 text-xs font-semibold text-green-800 hover:bg-green-100">
-                        <MessageCircle size={12} /> Open WhatsApp
-                      </button>
-                    ) : null}
                   </div>
                 </>
               ) : (
@@ -190,7 +174,7 @@ function PreparedLinks({
 
 function MemberPicker({ members, selected, onToggle }: { members: FamilyMember[]; selected: string[]; onToggle: (id: string) => void }) {
   if (members.length === 0) {
-    return <p className="rounded-xl border border-dashed border-sepia p-4 text-xs text-ink/50">Add family members to the Bond Map before preparing invitation links.</p>;
+    return <p className="rounded-xl border border-dashed border-sepia p-4 text-xs text-ink/65">Add family members to the Family Tree before preparing invitation links.</p>;
   }
   return (
     <div className="grid max-h-[40dvh] grid-cols-1 gap-2 overflow-y-auto rounded-2xl border border-sepia/60 bg-sand/10 p-2 sm:max-h-44 sm:grid-cols-2 sm:p-3">
@@ -235,7 +219,7 @@ function ModalShell({
         className="mobile-sheet-surface flex h-[100dvh] max-h-[100dvh] w-full max-w-xl flex-col overflow-hidden border-sepia bg-white shadow-2xl sm:h-auto sm:max-h-[92dvh] sm:rounded-[2rem] sm:border"
       >
         <header className="mobile-sheet-header flex min-h-14 shrink-0 items-center justify-between border-b border-sepia bg-sand px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6 sm:py-5">
-          <h3 className="font-serif text-lg font-bold italic text-ink sm:text-xl">{title}</h3>
+          <h3 className="font-serif text-lg font-bold text-ink sm:text-xl">{title}</h3>
           <button type="button" onClick={onClose} disabled={closeDisabled} className="flex min-h-11 min-w-11 items-center justify-center rounded-full hover:bg-sepia/30 disabled:opacity-40" aria-label="Close"><X size={20} /></button>
         </header>
         {children}
@@ -257,6 +241,8 @@ export function Calendar({
   refreshVersion = 0,
   focusTarget,
 }: CalendarProps) {
+  const { language } = useLanguage();
+  const dateLocale = language === 'ar' ? arSA : enUS;
   const todayKey = dubaiTodayKey();
   const [currentMonth, setCurrentMonth] = useState(() => dateFromKey(todayKey));
   const [selectedDate, setSelectedDate] = useState(() => dateFromKey(todayKey));
@@ -270,7 +256,7 @@ export function Calendar({
   const [inviteTarget, setInviteTarget] = useState<PersistentGathering | null>(null);
   const [inviteStage, setInviteStage] = useState<'choose' | 'review' | 'links'>('choose');
   const [inviteMemberIds, setInviteMemberIds] = useState<string[]>([]);
-  const [inviteChannel, setInviteChannel] = useState<InvitationChannel>('share_link');
+  const inviteChannel = 'share_link' as const;
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteError, setInviteError] = useState('');
   const [invitePrepared, setInvitePrepared] = useState<{ invitations: PreparedInvitation[]; deliveryNotice: string; gathering: PersistentGathering } | null>(null);
@@ -400,7 +386,6 @@ export function Calendar({
     setInviteTarget(null);
     setInviteStage('choose');
     setInviteMemberIds([]);
-    setInviteChannel('share_link');
     setInviteBusy(false);
     setInviteError('');
     setInvitePrepared(null);
@@ -566,7 +551,6 @@ export function Calendar({
     invitationRequestVersionRef.current += 1;
     setInviteTarget(gathering);
     setInviteMemberIds([]);
-    setInviteChannel('share_link');
     setInviteStage('choose');
     setInviteError('');
     setInvitePrepared(null);
@@ -657,11 +641,25 @@ export function Calendar({
       className="space-y-4 pb-24 sm:space-y-8 sm:pb-0"
       data-calendar-view={viewMode}
     >
+      <section className="relative overflow-hidden rounded-3xl bg-ink p-5 text-white shadow-xl sm:rounded-[2rem] sm:p-8">
+        <div className="relative z-10 flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="max-w-md">
+            <p className="text-xs font-semibold text-gold">Create gathering</p>
+            <h3 className="mt-2 font-serif text-2xl font-bold sm:text-3xl">Bring everyone together</h3>
+            <p className="mt-2 text-sm leading-relaxed text-white/75">Create a gathering, choose who to invite, and track RSVPs in one place.</p>
+          </div>
+          <button type="button" onClick={() => openPlanner()} className="flex min-h-12 shrink-0 items-center justify-center gap-2 rounded-full bg-gold px-6 text-sm font-bold text-ink shadow-lg transition-transform hover:scale-[1.02] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white">
+            <Plus size={18} /> Plan a gathering
+          </button>
+        </div>
+        <CalendarIcon className="absolute -bottom-8 -right-6 size-36 text-white/5" aria-hidden="true" />
+      </section>
+
       <header className="flex flex-col gap-3 border-b border-sepia pb-3 sm:flex-row sm:items-end sm:justify-between sm:gap-4 sm:pb-4">
         <div>
           <p className="text-xs font-semibold text-gold-ink">Asia/Dubai timezone</p>
-          <h2 className="font-serif text-2xl font-bold italic text-ink sm:text-3xl">
-            {format(viewMode === 'agenda' ? selectedDate : currentMonth, 'MMMM yyyy')}
+          <h2 className="font-serif text-2xl font-bold text-ink sm:text-3xl">
+            {format(viewMode === 'agenda' ? selectedDate : currentMonth, 'MMMM yyyy', { locale: dateLocale })}
           </h2>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 sm:justify-end">
@@ -724,11 +722,11 @@ export function Calendar({
                     selected ? 'bg-ink text-white shadow-sm' : 'text-ink/55 hover:bg-sand',
                     key === todayKey && !selected && 'text-gold-ink ring-1 ring-inset ring-gold-ink/50',
                   )}
-                  aria-label={`${format(day, 'EEEE, MMMM d')}${count ? `, ${count} gatherings` : ''}`}
+                  aria-label={`${format(day, 'EEEE, MMMM d', { locale: dateLocale })}${count ? `, ${count} gatherings` : ''}`}
                   aria-pressed={selected}
                   aria-current={key === todayKey ? 'date' : undefined}
                 >
-                  <span className="text-[10px] font-medium">{format(day, 'EEEEE')}</span>
+                  <span className="text-[10px] font-medium">{format(day, 'EEEEE', { locale: dateLocale })}</span>
                   <span className="mt-0.5 font-bold">{format(day, 'd')}</span>
                   {count > 0 ? <span className={cn('absolute bottom-1 h-1 w-1 rounded-full', selected ? 'bg-white' : 'bg-gold')} /> : null}
                 </button>
@@ -746,7 +744,7 @@ export function Calendar({
               const count = scopedGatherings.filter(item => formatDubaiDateKey(item.startAt) === key).length;
               const selected = key === selectedKey;
               return (
-                <button key={key} onClick={() => selectDate(day)} className={cn('relative flex min-h-11 min-w-11 flex-col items-center justify-center rounded-xl text-xs font-bold transition-all sm:h-14 sm:rounded-2xl', selected ? 'bg-ink text-white shadow-md' : 'hover:bg-sand/60', key === todayKey && !selected && 'border border-gold-ink text-gold-ink')} aria-label={`${format(day, 'MMMM d')}${count ? `, ${count} gatherings` : ''}`} aria-pressed={selected} aria-current={key === todayKey ? 'date' : undefined}>
+                <button key={key} onClick={() => selectDate(day)} className={cn('relative flex min-h-11 min-w-11 flex-col items-center justify-center rounded-xl text-xs font-bold transition-all sm:h-14 sm:rounded-2xl', selected ? 'bg-ink text-white shadow-md' : 'hover:bg-sand/60', key === todayKey && !selected && 'border border-gold-ink text-gold-ink')} aria-label={`${format(day, 'MMMM d', { locale: dateLocale })}${count ? `, ${count} gatherings` : ''}`} aria-pressed={selected} aria-current={key === todayKey ? 'date' : undefined}>
                   {format(day, 'd')}
                   {count > 0 ? <span className={cn('mt-1 h-1.5 w-1.5 rounded-full', selected ? 'bg-white' : 'bg-gold')} /> : null}
                 </button>
@@ -760,11 +758,11 @@ export function Calendar({
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-sepia pb-3 sm:pb-4">
           <div>
             <p className="text-xs font-medium text-ink/45">Selected date</p>
-            <h3 className="font-serif text-xl italic text-ink sm:text-2xl">{format(selectedDate, 'do MMMM')}</h3>
+            <h3 className="font-serif text-xl text-ink sm:text-2xl">{format(selectedDate, 'do MMMM', { locale: dateLocale })}</h3>
           </div>
           <button
             onClick={() => openPlanner()}
-            className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30 flex min-h-12 items-center gap-2 rounded-full bg-gold-ink px-4 text-xs font-bold text-white shadow-xl ring-4 ring-sand transition-colors hover:bg-ink focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-gold-ink focus-visible:ring-offset-2 sm:static sm:min-h-11 sm:bg-ink sm:shadow sm:ring-0 sm:hover:bg-gold-ink sm:focus-visible:ring-2"
+            className="flex min-h-11 items-center gap-2 rounded-full border border-sepia bg-white px-4 text-xs font-bold text-ink shadow-sm transition-colors hover:border-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink"
           >
             <Plus size={17} /> Plan gathering
           </button>
@@ -775,7 +773,7 @@ export function Calendar({
         ) : selectedGatherings.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-sepia bg-white/50 p-6 text-center sm:rounded-[2rem] sm:p-10">
             <CalendarIcon className="mx-auto text-gold" size={24} />
-            <p className="mt-3 font-serif text-lg italic text-ink/50">No gathering planned for this day.</p>
+            <p className="mt-3 font-serif text-lg text-ink/50">No gathering planned for this day.</p>
           </div>
         ) : selectedGatherings.map(gathering => (
           <article
@@ -791,12 +789,12 @@ export function Calendar({
           >
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <div className="flex flex-wrap items-center gap-2"><h4 className="font-serif text-xl font-bold italic">{gathering.title}</h4><StatusPill status={gathering.status} /></div>
+                <div className="flex flex-wrap items-center gap-2"><h4 className="font-serif text-xl font-bold">{gathering.title}</h4><StatusPill status={gathering.status} /></div>
                 <p className="mt-1 text-xs text-ink/55">{gathering.purpose}</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 {canManageGathering(gathering) && gathering.status !== 'completed' && gathering.status !== 'cancelled' ? (
-                  <button onClick={() => openInviteModal(gathering)} className="flex min-h-11 items-center gap-2 rounded-xl border border-sepia px-3 text-xs font-semibold hover:border-gold"><Link2 size={13} /> Prepare links</button>
+                  <button onClick={() => openInviteModal(gathering)} className="flex min-h-11 items-center gap-2 rounded-xl border border-sepia px-3 text-xs font-semibold hover:border-gold"><Link2 size={13} /> Prepare RSVP links</button>
                 ) : null}
                 {canCompleteGathering && gathering.status === 'inviting' && new Date(gathering.startAt).getTime() <= Date.now() ? (
                   <button disabled={Boolean(completionBusyId)} onClick={() => void completeGathering(gathering)} className="flex min-h-11 items-center gap-2 rounded-xl bg-ink px-3 text-xs font-semibold text-white hover:bg-gold-ink disabled:opacity-40">
@@ -810,7 +808,7 @@ export function Calendar({
               <span className="flex items-center gap-1.5"><MapPin size={13} className="text-gold" /> {gathering.locationName}</span>
               <span className="flex items-center gap-1.5"><Users size={13} className="text-gold" /> {gathering.invitations.length} invited</span>
             </div>
-            {gathering.notes ? <p className="mt-4 border-l-2 border-gold pl-3 text-xs italic text-ink/55">{gathering.notes}</p> : null}
+            {gathering.notes ? <p className="mt-4 border-l-2 border-gold pl-3 text-xs text-ink/55">{gathering.notes}</p> : null}
             {gathering.invitations.length > 0 ? (
               <div className="mt-5 grid gap-2 border-t border-sepia/50 pt-4 sm:grid-cols-2">
                 {gathering.invitations.map(invitation => (
@@ -825,7 +823,7 @@ export function Calendar({
       {viewMode === 'agenda' ? (
         <section className="space-y-2" aria-label="Upcoming gatherings">
           <div className="flex items-center justify-between">
-            <h3 className="font-serif text-lg font-bold italic">Coming up</h3>
+            <h3 className="font-serif text-lg font-bold">Coming up</h3>
             <span className="text-xs text-ink/45">Next {laterUpcomingGatherings.length}</span>
           </div>
           {laterUpcomingGatherings.length > 0 ? laterUpcomingGatherings.map(gathering => (
@@ -848,7 +846,7 @@ export function Calendar({
       ) : (
         <section className="relative overflow-hidden rounded-[2rem] bg-ink p-7 text-white shadow-xl">
           <p className="text-xs font-semibold text-white/50">Next persisted gathering</p>
-          <p className="mt-2 font-serif text-2xl font-bold italic">{nextGathering?.title ?? 'Nothing upcoming yet'}</p>
+          <p className="mt-2 font-serif text-2xl font-bold">{nextGathering?.title ?? 'Nothing upcoming yet'}</p>
           <p className="mt-3 flex items-center gap-2 text-xs font-semibold text-gold"><Clock size={12} /> {nextGathering ? formatDubaiDateTime(nextGathering.startAt) : 'Create a gathering to add it here'}</p>
         </section>
       )}
@@ -968,15 +966,9 @@ export function Calendar({
             {inviteStage === 'choose' ? (
               <div className="flex min-h-0 flex-1 flex-col">
                 <div className="mobile-sheet-scroll-region space-y-4 overflow-y-auto p-4 sm:p-6">
-                  <p className="text-sm text-ink/60">Select people who should receive a new private RSVP link. Preparing again replaces an existing link for that person.</p>
+                  <p className="text-sm text-ink/70">Select people who should receive a new private RSVP link.</p>
                   <MemberPicker members={members} selected={inviteMemberIds} onToggle={id => setInviteMemberIds(previous => previous.includes(id) ? previous.filter(item => item !== id) : [...previous, id])} />
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-semibold">Sharing option</span>
-                    <select value={inviteChannel} onChange={event => setInviteChannel(event.target.value as InvitationChannel)} className="w-full rounded-xl border border-sepia bg-sand/20 px-4 py-3 text-base">
-                      <option value="share_link">Copyable links</option>
-                      <option value="whatsapp">WhatsApp share buttons</option>
-                    </select>
-                  </label>
+                  <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm leading-relaxed text-blue-900">Family members who use AILAH will also receive an in-app RSVP notification.</div>
                 </div>
                 <footer className="mobile-sheet-footer mt-auto flex shrink-0 justify-end gap-3 border-t border-sepia bg-sand px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 sm:px-6 sm:py-4">
                   <button type="button" onClick={closeInviteModal} className="min-h-11 px-4 text-sm font-semibold">Cancel</button>
@@ -987,11 +979,11 @@ export function Calendar({
               <div className="flex min-h-0 flex-1 flex-col">
                 <div className="mobile-sheet-scroll-region space-y-4 overflow-y-auto p-4 sm:p-6">
                   <div className="rounded-2xl border border-sepia p-4 sm:p-5">
-                    <h4 className="font-serif text-lg font-bold italic">{inviteTarget.title}</h4>
+                    <h4 className="font-serif text-lg font-bold">{inviteTarget.title}</h4>
                     <p className="mt-3 flex items-center gap-2 text-sm"><Users size={14} className="text-gold" /> Prepare {inviteMemberIds.length} private RSVP link{inviteMemberIds.length === 1 ? '' : 's'}</p>
-                    <p className="mt-2 flex items-center gap-2 text-sm"><Send size={14} className="text-gold" /> {inviteChannel === 'whatsapp' ? 'WhatsApp buttons will open a prefilled message' : 'Copyable links will be shown'}</p>
+                    <p className="mt-2 flex items-center gap-2 text-sm"><Send size={14} className="text-gold" /> Copyable RSVP links will be created for the selected family members</p>
                   </div>
-                  <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900"><strong>No automatic delivery.</strong> Confirming prepares links only.</div>
+                  <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">You can copy each link after confirming. App users will see the RSVP invitation inside AILAH.</div>
                   {inviteError ? <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{inviteError}</p> : null}
                 </div>
                 <footer className="mobile-sheet-footer mt-auto flex shrink-0 justify-end gap-3 border-t border-sepia bg-sand px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 sm:px-6 sm:py-4">
@@ -1001,7 +993,7 @@ export function Calendar({
               </div>
             ) : invitePrepared ? (
               <div className="flex min-h-0 flex-1 flex-col">
-                <div className="mobile-sheet-scroll-region overflow-y-auto p-4 sm:p-6"><PreparedLinks invitations={invitePrepared.invitations} gathering={invitePrepared.gathering} deliveryNotice={invitePrepared.deliveryNotice} /></div>
+                <div className="mobile-sheet-scroll-region overflow-y-auto p-4 sm:p-6"><PreparedLinks invitations={invitePrepared.invitations} deliveryNotice={invitePrepared.deliveryNotice} /></div>
                 <footer className="mobile-sheet-footer mt-auto flex shrink-0 justify-end border-t border-sepia bg-sand px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 sm:px-6 sm:py-4"><button type="button" onClick={closeInviteModal} className="min-h-11 rounded-xl bg-ink px-5 text-sm font-semibold text-white">Done</button></footer>
               </div>
             ) : null}

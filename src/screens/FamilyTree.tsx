@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { FamilyMember, FamilyRole, LocationPrecision, LocationVisibility } from '../types';
-import { Plus, Search, Heart, X, Calendar, Phone, Sparkles, UserPlus, Trash2, Share2, Camera, Upload, UserCircle, LoaderCircle, LocateFixed, MapPin, Save, ShieldCheck, Maximize2, Minimize2, ZoomIn, ZoomOut, Crosshair, RotateCcw, List, Network, Info } from 'lucide-react';
+import { Plus, Search, Heart, X, Calendar, Phone, Sparkles, UserPlus, Trash2, Share2, Camera, UserCircle, LoaderCircle, LocateFixed, MapPin, Save, ShieldCheck, Maximize2, Minimize2, ZoomIn, ZoomOut, Crosshair, RotateCcw, List, Network, Info, MessageCircle } from 'lucide-react';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { cn } from '../lib/utils';
 import { calculateFitTransform, computeTreeLayout, generateConnections, getTreeBounds, groupMembersByFocus, relationshipLabelForFocus } from '../lib/treeLayout';
@@ -129,7 +129,7 @@ function CameraCaptureModal({ onCapture, onClose }: { onCapture: (photo: string)
         <div className="bg-sand p-5 flex items-center justify-between border-b border-sepia">
           <div className="flex items-center gap-2">
             <Camera size={18} className="text-gold" />
-            <h3 id="camera-heading" className="font-serif text-xl text-ink font-bold italic">Take profile photo</h3>
+            <h3 id="camera-heading" className="font-serif text-xl text-ink font-bold">Take profile photo</h3>
           </div>
           <button type="button" onClick={onClose} className="flex size-11 items-center justify-center rounded-full hover:bg-sepia/20 transition-colors" aria-label="Close camera">
             <X size={20} />
@@ -182,63 +182,36 @@ function PhotoPicker({
   const preview = photo || createAnonymousAvatar(fallbackSeed);
 
   return (
-    <div className="flex items-center gap-4 bg-sand/25 border border-sepia/50 rounded-2xl p-4">
-      <img src={preview} alt="Profile preview" className="size-20 min-w-20 min-h-20 shrink-0 rounded-full object-cover overflow-hidden border border-sepia bg-white shadow-sm" />
-      <div className="flex-1 min-w-0">
-        <p className="mb-2 text-sm font-semibold text-ink/60">Profile photo</p>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" disabled title="Private media storage is not connected yet" className="flex min-h-11 items-center gap-1.5 rounded-xl border border-sepia bg-white px-3 text-xs font-semibold text-ink/30 cursor-not-allowed">
-            <Upload size={13} /> Upload
-          </button>
-          <button type="button" disabled title="Private media storage is not connected yet" className="flex min-h-11 items-center gap-1.5 rounded-xl border border-sepia bg-white px-3 text-xs font-semibold text-ink/30 cursor-not-allowed">
-            <Camera size={13} /> Camera
-          </button>
-          <button type="button" disabled title="Private media storage is not connected yet" className="flex min-h-11 items-center gap-1.5 rounded-xl border border-sepia bg-white px-3 text-xs font-semibold text-ink/30 cursor-not-allowed">
-            <UserCircle size={13} /> Anonymous
-          </button>
-        </div>
-        <p className="mt-2 text-xs text-ink/45">Private media storage is the next milestone; no photo is uploaded locally.</p>
-      </div>
+    <div className="flex items-center gap-3 rounded-2xl border border-sepia/50 bg-sand/25 p-3">
+      <img src={preview} alt="Profile preview" className="size-16 shrink-0 rounded-full border border-sepia bg-white object-cover shadow-sm" />
+      <p className="text-sm font-semibold text-ink/60">Profile photo</p>
     </div>
   );
 }
 
-function FloralCorner({ side }: { side: 'left' | 'right' }) {
+function FamilyCornerMotif({ side }: { side: 'left' | 'right' }) {
   return (
     <svg
       aria-hidden="true"
-      viewBox="0 0 260 128"
+      viewBox="0 0 240 110"
       className={cn(
-        "absolute top-4 hidden h-28 w-56 text-ink/70 pointer-events-none sm:block",
+        "absolute top-6 hidden h-24 w-52 text-gold/65 pointer-events-none sm:block",
         side === 'left' ? "left-4" : "right-4 scale-x-[-1]"
       )}
       fill="none"
       stroke="currentColor"
-      strokeWidth="2.25"
+      strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
     >
-      <path d="M78 32H246" />
-      <path d="M54 32H66" />
-      <path d="M14 92C31 76 44 56 53 31" />
-      <path d="M16 86C8 71 7 58 14 48C25 56 28 68 21 82" />
-      <path d="M31 65C25 49 27 36 39 27C48 39 45 53 34 64" />
-      <path d="M49 43C45 29 48 17 59 10C67 22 63 34 53 43" />
-      <path d="M11 96C24 94 36 98 45 107C32 113 20 110 11 96" />
-      <path d="M26 78C38 76 49 81 55 91C42 96 32 91 26 78" />
-      <path d="M44 56C55 55 64 60 69 70C57 74 49 69 44 56" />
-      <path d="M33 35C27 27 23 18 22 8" />
-      <path d="M24 21C17 18 12 13 9 6" />
-      <path d="M26 22C32 17 37 11 40 4" />
-      <path d="M28 31C21 32 14 30 7 26" />
-      <path d="M31 36C38 35 45 37 52 41" />
-      <path d="M70 61C78 52 92 54 96 66C107 68 111 82 101 90C101 102 87 108 78 99C68 105 55 98 57 86C48 77 57 62 70 61Z" />
-      <path d="M77 73C84 68 93 74 91 82C89 91 76 91 74 82C73 78 74 75 77 73Z" />
-      <path d="M71 62C71 55 76 50 83 49" />
-      <path d="M96 67C102 63 109 64 114 69" />
-      <path d="M101 90C107 94 109 101 106 108" />
-      <path d="M78 99C76 106 70 110 63 109" />
-      <path d="M57 86C50 87 44 83 41 77" />
+      <path d="M18 88C52 62 72 38 88 12" />
+      <path d="M48 66C33 60 24 49 24 35C39 38 49 49 52 63" />
+      <path d="M65 48C54 37 51 24 57 12C69 21 73 33 68 46" />
+      <path d="M35 78C23 78 13 84 7 96C21 99 32 94 39 82" />
+      <path d="M88 12C105 33 119 52 130 69" />
+      <path d="M130 69H232" />
+      <circle cx="91" cy="20" r="4" fill="currentColor" stroke="none" />
+      <circle cx="130" cy="69" r="4" fill="currentColor" stroke="none" />
     </svg>
   );
 }
@@ -893,15 +866,32 @@ export function FamilyTree({
     </div>
   );
 
+  const shareRelativeForm = () => {
+    const questions = [
+      'AILAH family profile form',
+      '',
+      'Please reply with the details you are comfortable sharing:',
+      '1. Full name:',
+      '2. Relationship to our family:',
+      '3. Birthday (optional):',
+      '4. Phone or email (optional):',
+      '5. Emirate (optional):',
+      '6. Interests or a family note (optional):',
+      '',
+      'Your reply will be added to our private family tree by a family administrator.',
+    ].join('\n');
+    window.open(`https://wa.me/?text=${encodeURIComponent(questions)}`, '_blank', 'noopener,noreferrer');
+  };
+
   return (
     <div className="heritage-root flex h-full min-h-0 flex-1 flex-col gap-3 overflow-hidden bg-sand lg:h-auto lg:flex-none lg:gap-8 lg:overflow-visible">
       <section className="heritage-hero relative shrink-0 overflow-hidden rounded-2xl border border-sepia bg-white p-3 shadow-sm lg:rounded-[2rem] lg:p-8">
-        <div className="pointer-events-none hidden lg:block"><FloralCorner side="left" /><FloralCorner side="right" /></div>
+        <div className="pointer-events-none hidden lg:block"><FamilyCornerMotif side="left" /><FamilyCornerMotif side="right" /></div>
         <div className="heritage-hero-inner relative z-10 flex flex-col gap-3 lg:items-center lg:gap-6 lg:text-center">
           <div className="heritage-hero-family min-w-0 w-full lg:flex-none">
-            <p className="hidden text-xs font-semibold text-ink/45 lg:block">Digital family tree of</p>
-            <h3 className="truncate font-serif text-xl italic tracking-wide text-ink lg:text-4xl">{familyName}</h3>
-            <p className="mt-0.5 text-xs text-ink/55 lg:hidden">{members.length} {members.length === 1 ? 'person' : 'people'} in your Heritage tree</p>
+            <p className="hidden text-xs font-semibold text-ink/60 lg:block">Digital family tree of</p>
+            <h3 className="truncate font-serif text-xl tracking-wide text-ink lg:text-4xl">{familyName}</h3>
+            <p className="mt-0.5 text-xs text-ink/65 lg:hidden">{members.length} {members.length === 1 ? 'person' : 'people'} in your Family tree</p>
           </div>
           <div className="heritage-hero-actions grid w-full grid-cols-2 items-center gap-2 lg:flex lg:max-w-lg lg:justify-center">
             {currentUserMemberId && (
@@ -936,7 +926,7 @@ export function FamilyTree({
             <div className="flex-1">
               <div className="flex items-center gap-2">
                 <LocateFixed size={18} className="text-gold" />
-                <h4 id="location-sharing-heading" className="font-serif text-xl italic">Share my location once</h4>
+                <h4 id="location-sharing-heading" className="font-serif text-xl">Share my location once</h4>
               </div>
               <p className="mt-2 max-w-xl text-sm leading-relaxed text-ink/55">
                 This runs only when you press the button. It does not track you in the background. Non-exact coordinates are rounded before storage; the family map and AI receive only an authorized area or coarse distance summary.
@@ -977,11 +967,11 @@ export function FamilyTree({
             </button>
           </div>
           <div className="heritage-toolbar-secondary flex w-full min-w-0 items-center gap-1 lg:ml-auto lg:w-auto">
-            <div role="group" className="flex shrink-0 rounded-xl border border-sepia bg-sand/50 p-0.5" aria-label="Heritage view">
+            <div role="group" className="flex shrink-0 rounded-xl border border-sepia bg-sand/50 p-0.5" aria-label="Family view">
               <button type="button" onClick={() => setViewMode('tree')} aria-pressed={viewMode === 'tree'} className={cn('flex min-h-11 items-center gap-1 rounded-[0.6rem] px-2.5 text-xs font-semibold', viewMode === 'tree' ? 'bg-white text-ink shadow-sm' : 'text-ink/55')}><Network size={16} /> Tree</button>
               <button type="button" onClick={() => setViewMode('list')} aria-pressed={viewMode === 'list'} className={cn('flex min-h-11 items-center gap-1 rounded-[0.6rem] px-2.5 text-xs font-semibold', viewMode === 'list' ? 'bg-white text-ink shadow-sm' : 'text-ink/55')}><List size={16} /> List</button>
             </div>
-            <div className="heritage-landscape-actions hidden shrink-0 items-center gap-0.5" aria-label="Heritage actions">
+            <div className="heritage-landscape-actions hidden shrink-0 items-center gap-0.5" aria-label="Family actions">
               {currentUserMemberId && (
                 <button type="button" onClick={() => setLocationSheetOpen(true)} className="flex size-11 items-center justify-center rounded-xl text-ink hover:bg-sand" aria-label="Location sharing settings"><LocateFixed size={18} /></button>
               )}
@@ -1080,7 +1070,7 @@ export function FamilyTree({
                   style={{ left: node.x * X_SPACING, top: node.y * Y_SPACING }}
                 >
                   <img src={member.photo || createAnonymousAvatar(member.id)} alt="" className="pointer-events-none size-12 shrink-0 rounded-full border border-sepia/30 bg-white object-cover shadow-sm" />
-                  <span className={cn('mt-1.5 block w-full truncate font-serif text-base font-semibold italic leading-tight text-ink', scale < 0.78 && 'invisible')} title={member.name}>{member.name}</span>
+                  <span className={cn('mt-1.5 block w-full truncate font-serif text-base font-semibold leading-tight text-ink', scale < 0.78 && 'invisible')} title={member.name}>{member.name}</span>
                   <span className={cn('mt-0.5 block w-full truncate text-xs font-semibold text-ink/55', scale < 0.78 && 'invisible')}>{relationshipLabel}</span>
                 </div>
               );
@@ -1155,7 +1145,7 @@ export function FamilyTree({
             {focusedMember && (
               <div className="mb-4 flex items-center gap-3 rounded-2xl border border-gold/30 bg-gold/10 p-3">
                 <img src={focusedMember.photo || createAnonymousAvatar(focusedMember.id)} alt="" className="size-12 rounded-full object-cover" />
-                <div className="min-w-0"><p className="truncate font-serif text-lg font-semibold italic">{focusedMember.name}</p><p className="text-xs text-ink/55">Focused person</p></div>
+                <div className="min-w-0"><p className="truncate font-serif text-lg font-semibold">{focusedMember.name}</p><p className="text-xs text-ink/55">Focused person</p></div>
               </div>
             )}
             <div className="space-y-5">
@@ -1185,12 +1175,6 @@ export function FamilyTree({
         )}
       </section>
 
-      {/* Heritage Tip — outside tree area */}
-      <div className="hidden rounded-3xl border border-gold/15 bg-white/95 p-5 shadow-lg backdrop-blur-md lg:block">
-        <div className="mb-2 flex items-center gap-2"><Heart size={12} className="text-gold" /><span className="text-xs font-bold text-ink">Heritage tip</span></div>
-        <p className="text-sm font-serif italic leading-relaxed text-ink/60">Preserve traditions by letting younger family members register local stories inside the family tree memories list.</p>
-      </div>
-
       <p className="hidden items-center justify-center gap-3 py-6 text-xs font-semibold text-ink/45 lg:flex"><Share2 size={16} /> Select relatives for private invitations in Gatherings</p>
 
       <AnimatePresence>
@@ -1209,7 +1193,7 @@ export function FamilyTree({
               className="max-h-[92dvh] w-full overflow-y-auto rounded-t-[2rem] bg-white px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-3 shadow-2xl motion-reduce:transition-none"
             >
               <div className="sticky top-0 z-10 -mx-4 mb-4 flex min-h-14 items-center justify-between border-b border-sepia bg-white px-4">
-                <div><h4 id="mobile-location-heading" className="font-serif text-xl font-semibold italic">Location sharing</h4><p className="text-xs text-ink/50">One-time and privacy controlled</p></div>
+                <div><h4 id="mobile-location-heading" className="font-serif text-xl font-semibold">Location sharing</h4><p className="text-xs text-ink/50">One-time and privacy controlled</p></div>
                 <button type="button" onClick={() => setLocationSheetOpen(false)} className="flex size-11 items-center justify-center rounded-full" aria-label="Close location sharing"><X size={20} /></button>
               </div>
               <p className="mb-4 text-sm leading-relaxed text-ink/60">Your device location is requested only when you confirm below. It is never background tracking.</p>
@@ -1248,7 +1232,7 @@ export function FamilyTree({
                 <div className="flex min-h-16 shrink-0 items-center justify-between border-b border-sepia bg-sand px-4 py-3 md:p-6">
                   <div className="flex items-center gap-2">
                     <UserPlus size={18} className="text-gold" />
-                    <h3 id="add-relative-heading" className="font-serif text-xl text-ink font-bold italic">Add relative to tree</h3>
+                    <h3 id="add-relative-heading" className="font-serif text-xl text-ink font-bold">Add relative to tree</h3>
                   </div>
                   <button 
                     type="button" 
@@ -1269,6 +1253,14 @@ export function FamilyTree({
                     onCamera={() => setCameraTarget('add')}
                     onAnonymous={() => setFormPhoto('')}
                   />
+
+                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                    <p className="text-sm font-semibold text-emerald-950">A relative does not use the app?</p>
+                    <p className="mt-1 text-xs leading-relaxed text-emerald-900/75">Share a simple form in WhatsApp so a relative can reply without installing the app.</p>
+                    <button type="button" onClick={shareRelativeForm} className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-emerald-700 px-4 text-sm font-semibold text-white hover:bg-emerald-800">
+                      <MessageCircle size={17} /> Send WhatsApp form
+                    </button>
+                  </div>
 
                   {/* Name */}
                   <div className="space-y-1">
@@ -1398,7 +1390,7 @@ export function FamilyTree({
                     disabled={saving}
                     className="flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-ink px-4 text-center text-sm font-semibold text-white shadow transition-colors hover:bg-gold-ink disabled:opacity-50"
                   >
-                    {saving && <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" />} Add to lineage
+                    {saving && <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" />} Add to family
                   </button>
                   <button 
                     type="button" 
@@ -1446,7 +1438,7 @@ export function FamilyTree({
                     <span className="text-xs font-semibold text-gold-ink">
                       {selectedPerson.id === currentUserMemberId ? `Me (${familyRole})` : selectedPerson.relationship}
                     </span>
-                    <h3 id="person-profile-heading" className="font-serif text-xl text-ink font-bold italic leading-tight">{selectedPerson.name}</h3>
+                    <h3 id="person-profile-heading" className="font-serif text-xl text-ink font-bold leading-tight">{selectedPerson.name}</h3>
                     <p className="text-xs font-semibold text-ink/45">Branch: {selectedPerson.familyBranch || 'Main'}</p>
                   </div>
                 </div>
@@ -1504,7 +1496,7 @@ export function FamilyTree({
 
                 {/* Lineage Info */}
                 <div className="bg-sand/30 border border-sepia/50 p-4 rounded-xl space-y-2">
-                  <h4 className="text-sm font-semibold text-ink/50">Heritage lineage</h4>
+                  <h4 className="text-sm font-semibold text-ink/65">Family connections</h4>
                   <p className="text-sm">
                     <strong>Parents: </strong> 
                     {selectedPerson.parentIds && selectedPerson.parentIds.length > 0 

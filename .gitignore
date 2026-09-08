@@ -5,6 +5,7 @@ coverage/
 .DS_Store
 *.log
 data/
+tmp/
 .tmp-docs-review/
 .env*
 !.env.example

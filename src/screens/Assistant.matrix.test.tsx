@@ -35,11 +35,11 @@ const validPlanner = {
 };
 
 const actionCases = [
-  { actionType: 'ADD_MEMBER', resources: ['family'], resultLabel: 'View Bond Map', confirmLabel: 'Confirm change' },
-  { actionType: 'UPDATE_MEMBER', resources: ['family'], resultLabel: 'View Bond Map', confirmLabel: 'Confirm change' },
-  { actionType: 'DELETE_MEMBER', resources: ['family'], resultLabel: 'View Bond Map', confirmLabel: 'Review & delete' },
-  { actionType: 'CREATE_RELATIONSHIP', resources: ['family'], resultLabel: 'View Bond Map', confirmLabel: 'Confirm change' },
-  { actionType: 'DELETE_RELATIONSHIP', resources: ['family'], resultLabel: 'View Bond Map', confirmLabel: 'Review & delete' },
+  { actionType: 'ADD_MEMBER', resources: ['family'], resultLabel: 'View Family Tree', confirmLabel: 'Confirm change' },
+  { actionType: 'UPDATE_MEMBER', resources: ['family'], resultLabel: 'View Family Tree', confirmLabel: 'Confirm change' },
+  { actionType: 'DELETE_MEMBER', resources: ['family'], resultLabel: 'View Family Tree', confirmLabel: 'Review & delete' },
+  { actionType: 'CREATE_RELATIONSHIP', resources: ['family'], resultLabel: 'View Family Tree', confirmLabel: 'Confirm change' },
+  { actionType: 'DELETE_RELATIONSHIP', resources: ['family'], resultLabel: 'View Family Tree', confirmLabel: 'Review & delete' },
   { actionType: 'CREATE_RECONNECTION_PLAN', resources: ['plans'], resultLabel: 'View Reconnection Plans', confirmLabel: 'Confirm change' },
   { actionType: 'UPDATE_PLAN_STATUS', resources: ['plans'], resultLabel: 'View Reconnection Plans', confirmLabel: 'Confirm change' },
   { actionType: 'CREATE_GATHERING_DRAFT', resources: ['gatherings'], resultLabel: 'View Calendar', confirmLabel: 'Confirm change' },

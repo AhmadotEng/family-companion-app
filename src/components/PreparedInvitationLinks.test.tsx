@@ -59,7 +59,7 @@ describe('PreparedInvitationLinks explicit controls', () => {
     expect(screen.getByRole('button', { name: 'Copy link' })).toBeTruthy();
   });
 
-  it('uses mobile-safe controls and never opens a sharing destination without an explicit action', async () => {
+  it('uses mobile-safe copy and preview controls without opening a destination automatically', async () => {
     const user = userEvent.setup();
     const onContinue = vi.fn();
     const open = vi.spyOn(window, 'open').mockImplementation(() => null);
@@ -69,7 +69,7 @@ describe('PreparedInvitationLinks explicit controls', () => {
     expect(open).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Copy link' }).className).toContain('min-h-11');
     expect(screen.getByRole('link', { name: 'Preview' }).className).toContain('min-h-11');
-    expect(screen.getByRole('button', { name: 'Open WhatsApp' }).className).toContain('min-h-11');
+    expect(screen.queryByRole('button', { name: 'Open WhatsApp' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Hide prepared invitation links' }).className).toContain('size-11');
 
     await user.click(screen.getByRole('button', { name: 'I copied the links — view Calendar' }));

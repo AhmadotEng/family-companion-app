@@ -7,7 +7,6 @@ import {
   Info,
   LoaderCircle,
   MapPin,
-  MessageCircle,
   Search,
 } from 'lucide-react';
 import { ApiError } from '../api/client';
@@ -25,7 +24,6 @@ import {
   type GatheringPlannerPrefill,
   type GatheringPlannerSource,
   type GatheringPlannerSubmissionResult,
-  type InvitationChannel,
 } from '../lib/gatheringPlanner';
 import { cn } from '../lib/utils';
 import type { FamilyMember } from '../types';
@@ -72,7 +70,7 @@ function MemberPicker({
   const [query, setQuery] = useState('');
 
   if (members.length === 0) {
-    return <p className="rounded-xl border border-dashed border-sepia p-4 text-xs text-ink/50">Add family members to the Bond Map before preparing invitation links.</p>;
+    return <p className="rounded-xl border border-dashed border-sepia p-4 text-xs text-ink/65">Add family members to the Family Tree before preparing invitation links.</p>;
   }
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -148,13 +146,6 @@ function PreparedLinks({
     }
   };
 
-  const openWhatsApp = (invitationUrl: string) => {
-    // This is intentionally user-triggered. Preparing links never opens an app
-    // and never sends a message automatically.
-    const message = `Family gathering invitation: ${gathering.title} on ${formatDubaiDateTime(gathering.startAt, 'short')}. Please RSVP: ${invitationUrl}`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
-  };
-
   return (
     <div className="space-y-4">
       <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-xs text-emerald-900" role="status">
@@ -163,9 +154,7 @@ function PreparedLinks({
       <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-xs text-blue-900">
         <p className="flex items-center gap-2 font-bold"><Info size={14} /> Links prepared, not sent</p>
         <p className="mt-1 leading-relaxed">{deliveryNotice}</p>
-        {window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? (
-          <p className="mt-2 font-medium">Localhost links normally work only on this computer. Deploy the app before sharing with another device.</p>
-        ) : null}
+        <p className="mt-2 font-medium">Family members who use AILAH will also receive an in-app RSVP notification.</p>
       </div>
       <div className="space-y-2">
         {invitations.map(invitation => {
@@ -184,11 +173,6 @@ function PreparedLinks({
                     <a href={invitationUrl} target="_blank" rel="noreferrer" className="flex min-h-11 items-center gap-1.5 rounded-lg border border-sepia px-3 text-[11px] font-bold tracking-wide hover:border-gold">
                       <ExternalLink size={12} /> Preview
                     </a>
-                    {invitation.whatsappUrl ? (
-                      <button type="button" onClick={() => openWhatsApp(invitationUrl)} className="flex min-h-11 items-center gap-1.5 rounded-lg border border-green-200 bg-green-50 px-3 text-[11px] font-bold tracking-wide text-green-800 hover:bg-green-100">
-                        <MessageCircle size={12} /> Open WhatsApp
-                      </button>
-                    ) : null}
                   </div>
                 </>
               ) : (
@@ -398,13 +382,7 @@ export function GatheringPlanner({
               <MemberPicker members={members} selected={draft.memberIds} onToggle={toggleDraftMember} />
             </div>
             {draft.memberIds.length > 0 ? (
-              <label className="block">
-                <span className="mb-1 block text-[11px] font-bold tracking-wide">Sharing option</span>
-                <select value={draft.channel} onChange={event => updateDraft('channel', event.target.value as InvitationChannel)} className="min-h-11 w-full rounded-xl border border-sepia bg-sand/20 px-4 py-2.5 text-base focus:border-gold-ink focus:ring-1 focus:ring-gold-ink sm:text-sm">
-                  <option value="share_link">Copyable links</option>
-                  <option value="whatsapp">WhatsApp share buttons</option>
-                </select>
-              </label>
+              <p className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs leading-relaxed text-blue-900">Copyable RSVP links will be prepared. Family members who use AILAH will also receive an in-app notification.</p>
             ) : null}
             {saveError ? <p role="alert" className="text-xs text-red-700">{saveError}</p> : null}
           </div>
@@ -417,7 +395,7 @@ export function GatheringPlanner({
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="mobile-sheet-scroll-region min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 sm:p-6" data-gathering-planner-scroll-region>
             <div className="rounded-2xl border border-sepia p-4 sm:p-5">
-              <h4 className="font-serif text-lg font-bold italic sm:text-xl">{draft.title}</h4>
+              <h4 className="font-serif text-lg font-bold sm:text-xl">{draft.title}</h4>
               <p className="mt-1 text-xs text-ink/55">{draft.purpose}</p>
               <dl className="mt-4 space-y-2 text-xs">
                 <div className="flex items-start gap-2">
@@ -437,11 +415,7 @@ export function GatheringPlanner({
                 </div>
                 <div className="grid grid-cols-[4.5rem_1fr] gap-2 sm:grid-cols-[5rem_1fr]">
                   <dt className="font-bold text-ink/45">Sharing</dt>
-                  <dd>{draft.memberIds.length === 0
-                    ? 'No links will be prepared'
-                    : draft.channel === 'whatsapp'
-                      ? 'WhatsApp share buttons'
-                      : 'Copyable private links'}</dd>
+                  <dd>{draft.memberIds.length === 0 ? 'No links will be prepared' : 'Copyable private links'}</dd>
                 </div>
                 <div className="grid grid-cols-[4.5rem_1fr] gap-2 sm:grid-cols-[5rem_1fr]"><dt className="font-bold text-ink/45">Notes</dt><dd className="whitespace-pre-wrap break-words">{draft.notes || 'None'}</dd></div>
               </dl>
@@ -491,7 +465,7 @@ export function GatheringPlanner({
           <div className="mobile-sheet-scroll-region min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 sm:p-6" data-gathering-planner-scroll-region>
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-950 sm:p-5" role="status">
               <p className="flex items-center gap-2 text-xs font-bold tracking-wide"><Check size={14} /> Gathering saved</p>
-              <h4 className="mt-2 font-serif text-lg font-bold italic sm:text-xl">{savedGathering.title}</h4>
+              <h4 className="mt-2 font-serif text-lg font-bold sm:text-xl">{savedGathering.title}</h4>
               <p className="mt-2 text-xs">{formatDubaiDateTime(savedGathering.startAt)}</p>
               <p className="mt-1 text-xs">No invitation links were created.</p>
             </div>

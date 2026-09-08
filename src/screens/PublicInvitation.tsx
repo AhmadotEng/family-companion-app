@@ -70,18 +70,18 @@ export function PublicInvitationScreen({ token }: PublicInvitationProps) {
       <div className="mx-auto w-full min-w-0 max-w-xl">
         <header className="mb-5 text-center sm:mb-6">
           <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-ink text-gold shadow-lg"><CalendarDays size={24} /></span>
-          <p className="mt-4 text-[10px] font-bold uppercase tracking-[0.3em] text-gold">Family Companion</p>
+          <p className="mt-4 text-[10px] font-bold uppercase tracking-[0.3em] text-gold">AILAH</p>
         </header>
 
         {loading ? (
           <section className="rounded-3xl border border-sepia bg-white p-6 text-center shadow-xl sm:rounded-[2rem] sm:p-12" aria-live="polite" aria-busy="true">
             <LoaderCircle className="mx-auto animate-spin text-gold" size={28} />
-            <p className="mt-4 font-serif text-lg italic">Opening your invitation…</p>
+            <p className="mt-4 font-serif text-lg">Opening your invitation…</p>
           </section>
         ) : !invitation ? (
           <section className="rounded-3xl border border-sepia bg-white p-5 text-center shadow-xl sm:rounded-[2rem] sm:p-10">
             <X className="mx-auto text-red-500" size={30} />
-            <h1 className="mt-4 font-serif text-2xl font-bold italic">Invitation unavailable</h1>
+            <h1 className="mt-4 font-serif text-2xl font-bold">Invitation unavailable</h1>
             <p role="alert" className="mt-3 text-sm leading-relaxed text-ink/60">{error || 'This invitation is invalid or is no longer available.'}</p>
             <p className="mt-5 text-sm text-ink/45">Ask the gathering organizer to prepare a new private link.</p>
           </section>
@@ -89,17 +89,17 @@ export function PublicInvitationScreen({ token }: PublicInvitationProps) {
           <section className="min-w-0 overflow-hidden rounded-3xl border border-sepia bg-white shadow-xl sm:rounded-[2rem]">
             <div className="min-w-0 bg-ink p-5 text-white sm:p-7">
               <p className="break-words text-sm font-semibold text-gold">{invitation.familyName} invitation</p>
-              <h1 className="mt-3 break-words font-serif text-[1.75rem] font-bold italic sm:text-3xl">{invitation.title}</h1>
+              <h1 className="mt-3 break-words font-serif text-[1.75rem] font-bold sm:text-3xl">{invitation.title}</h1>
               <p className="mt-2 text-sm leading-relaxed text-white/65">{invitation.purpose}</p>
             </div>
             <div className="min-w-0 space-y-5 p-5 sm:space-y-6 sm:p-7">
-              <p className="break-words font-serif text-lg italic">Hello {invitation.inviteeName}, <span className="not-italic text-sm text-ink/55">{invitation.hostName} invited you.</span></p>
+              <p className="break-words font-serif text-lg">Hello {invitation.inviteeName}, <span className="not-italic text-sm text-ink/55">{invitation.hostName} invited you.</span></p>
               <div className="min-w-0 space-y-3 rounded-2xl border border-sepia bg-sand/20 p-4 text-sm sm:p-5">
                 <p className="flex min-w-0 items-start gap-3"><Clock className="mt-0.5 shrink-0 text-gold" size={17} /><span className="min-w-0"><strong className="block font-semibold">Date and time</strong><span className="break-words text-ink/60">{formatDubaiDateTime(invitation.startAt)}</span></span></p>
                 <p className="flex min-w-0 items-start gap-3"><MapPin className="mt-0.5 shrink-0 text-gold" size={17} /><span className="min-w-0"><strong className="block font-semibold">Location</strong><span className="break-words text-ink/60">{invitation.locationName}</span></span></p>
                 <p className="flex min-w-0 items-start gap-3"><Users className="mt-0.5 shrink-0 text-gold" size={17} /><span className="min-w-0"><strong className="block font-semibold">Gathering type</strong><span className="break-words text-ink/60">{invitation.type}</span></span></p>
               </div>
-              {invitation.notes ? <p className="break-words border-l-2 border-gold pl-4 text-sm italic leading-relaxed text-ink/60">{invitation.notes}</p> : null}
+              {invitation.notes ? <p className="break-words border-l-2 border-gold pl-4 text-sm leading-relaxed text-ink/60">{invitation.notes}</p> : null}
 
               <div>
                 <h2 className="text-sm font-semibold text-ink/50">Your RSVP</h2>

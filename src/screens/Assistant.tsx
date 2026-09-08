@@ -3,12 +3,11 @@ import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   ArrowRight,
-  Bot,
   Check,
   LoaderCircle,
   Send,
-  ShieldCheck,
   Sparkles,
+  Trash2,
   X,
 } from 'lucide-react';
 import { motion } from 'motion/react';
@@ -1008,40 +1007,6 @@ export function Assistant({
       data-testid="assistant-mobile-shell"
       data-composer-focused={composerFocused ? 'true' : 'false'}
     >
-      <header className="assistant-mobile-optional mb-1 flex min-h-9 shrink-0 items-center justify-between sm:hidden">
-        <p className="text-[11px] font-medium text-ink/50">Private, review-first family support</p>
-        <span className="flex size-8 items-center justify-center rounded-full border border-sepia bg-white text-gold" aria-hidden="true">
-          <Bot size={16} />
-        </span>
-      </header>
-
-      <details className="assistant-mobile-optional assistant-safety-panel group mb-2 shrink-0 overflow-hidden rounded-2xl border border-gold/20 bg-gold/10 text-ink">
-        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-gold-ink [&::-webkit-details-marker]:hidden">
-          <ShieldCheck className="shrink-0 text-gold" size={17} />
-          <span className="min-w-0 flex-1">
-            <span className="block text-xs font-bold text-ink">Confirm before anything changes</span>
-            <span className="block text-[11px] text-ink/55">Safety and conversation controls</span>
-          </span>
-          <span className="text-[11px] font-bold text-gold-ink group-open:hidden">Read</span>
-          <span className="hidden text-[11px] font-bold text-gold-ink group-open:inline">Close</span>
-        </summary>
-        <div className="border-t border-gold/15 px-3 pb-3 pt-2">
-          <p className="text-xs leading-relaxed text-ink/65">
-            The model may suggest actions, but validated server code performs them only after you approve the exact change.
-          </p>
-          {sessionId && (
-            <button
-              type="button"
-              onClick={() => void deleteConversation()}
-              disabled={isLoading || isRestoring}
-              className="mt-2 min-h-11 rounded-xl border border-gold/30 px-3 text-xs font-bold tracking-wide text-ink/55 hover:border-red-300 hover:text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink disabled:opacity-40"
-            >
-              Delete conversation
-            </button>
-          )}
-        </div>
-      </details>
-
       {!familyId && (
         <div className="mb-2 flex shrink-0 items-center gap-3 rounded-2xl border border-red-200 bg-red-50 p-3 text-red-700" role="alert">
           <AlertCircle size={18} />
@@ -1055,6 +1020,21 @@ export function Assistant({
           <p className="text-xs font-semibold">{roleNotice}</p>
         </div>
       )}
+
+      {sessionId ? (
+        <div className="mb-1 flex shrink-0 justify-end">
+          <button
+            type="button"
+            onClick={() => void deleteConversation()}
+            disabled={isLoading || isRestoring}
+            aria-label="Delete conversation"
+            title="Delete conversation"
+            className="flex size-11 items-center justify-center rounded-xl text-ink/45 transition-colors hover:bg-red-50 hover:text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 disabled:opacity-35"
+          >
+            <Trash2 size={17} aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
 
       {familyId ? (
         <div className="assistant-mobile-optional assistant-reconnection-panel mb-2 shrink-0">
@@ -1099,7 +1079,7 @@ export function Assistant({
             data-agent-message={message.id === 'welcome' ? 'welcome' : message.role}
             data-agent-speaker={message.role}
             role="article"
-            aria-label={message.role === 'user' ? 'Your message' : 'AI Helper message'}
+            aria-label={message.role === 'user' ? 'Your message' : 'SILAH message'}
           >
             {message.role === 'user' ? (
               <div className="flex size-8 shrink-0 items-center justify-center rounded-full border border-ink bg-ink text-white shadow-sm sm:size-9" aria-hidden="true">
@@ -1136,7 +1116,7 @@ export function Assistant({
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold tracking-wide text-gold-ink">Proposed action</p>
-                      <h3 className="mt-1 font-serif text-base font-bold italic text-ink sm:text-lg">{message.proposal.title}</h3>
+                      <h3 className="mt-1 font-serif text-base font-bold text-ink sm:text-lg">{message.proposal.title}</h3>
                     </div>
                     <span className="rounded-full bg-sand px-3 py-1 text-[10px] font-bold tracking-wide text-ink/50">
                       {humanizeAgentLabel(message.proposal.actionType)}
@@ -1224,7 +1204,7 @@ export function Assistant({
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold tracking-wide text-blue-700">Editable gathering plan</p>
-                      <h3 className="mt-1 font-serif text-base font-bold italic text-ink sm:text-lg">{message.planner.title}</h3>
+                      <h3 className="mt-1 font-serif text-base font-bold text-ink sm:text-lg">{message.planner.title}</h3>
                     </div>
                     <span className={cn(
                       'rounded-full px-3 py-1 text-[10px] font-bold tracking-wide',
@@ -1370,7 +1350,7 @@ export function Assistant({
               }
             }}
             disabled={!familyId || isLoading || isRestoring}
-            placeholder="Ask AI Helper…"
+            placeholder="Ask SILAH…"
             enterKeyHint="send"
             className="min-h-12 w-full rounded-2xl border border-sepia bg-white px-4 py-3 pr-14 text-base text-ink shadow-sm focus:outline-none focus:ring-2 focus:ring-gold-ink disabled:bg-sand disabled:text-ink/35 sm:text-sm"
           />
@@ -1401,8 +1381,8 @@ export function Assistant({
             <section className="mobile-sheet-surface flex h-[100dvh] max-h-[100dvh] w-full max-w-xl flex-col overflow-hidden border-0 border-sepia bg-white shadow-2xl sm:h-auto sm:max-h-[92dvh] sm:rounded-[2rem] sm:border">
             <header className="mobile-sheet-header sticky top-0 z-20 flex shrink-0 items-center justify-between border-b border-sepia bg-sand/95 px-4 pb-3 pt-[calc(0.75rem+env(safe-area-inset-top))] backdrop-blur sm:px-6 sm:py-5">
               <div>
-                <p className="text-[11px] font-bold tracking-wide text-gold-ink">AI Helper</p>
-                <h3 className="font-serif text-lg font-bold italic text-ink sm:text-xl">
+                <p className="text-[11px] font-bold tracking-wide text-gold-ink">SILAH</p>
+                <h3 className="font-serif text-lg font-bold text-ink sm:text-xl">
                   {activePlannerStage === 'details'
                     ? 'Plan Gathering'
                     : activePlannerStage === 'review'

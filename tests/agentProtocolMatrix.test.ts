@@ -643,7 +643,65 @@ describe("agent protocol matrix", () => {
     }
   });
 
-  it("maps malformed JSON, generic rejection, and quota errors without persisting a turn", async () => {
+  it("retries transient Gemini failures with bounded exponential backoff", async () => {
+    const generateContent = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("busy"), { status: 503 }))
+      .mockRejectedValueOnce(Object.assign(new Error("temporary failure"), { status: 500 }))
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ kind: "message", message: "Recovered." }),
+      });
+    const provider = new GeminiAgentProvider({
+      apiKey: "test-gemini-key",
+      model: "gemini-test-model",
+      timeoutMs: 12_345,
+      maxAttempts: 3,
+      retryBaseDelayMs: 1,
+    });
+    (provider as unknown as {
+      client: { models: { generateContent: typeof generateContent } };
+    }).client = { models: { generateContent } };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(provider.generate({
+      request: "Help my family reconnect.",
+      history: [],
+      family: minimalFamilyContext(),
+    })).resolves.toEqual({ kind: "message", message: "Recovered." });
+
+    expect(generateContent).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry non-transient Gemini errors and bounds repeated overload retries", async () => {
+    const generateContent = vi.fn();
+    const provider = new GeminiAgentProvider({
+      apiKey: "test-gemini-key",
+      model: "gemini-test-model",
+      timeoutMs: 12_345,
+      maxAttempts: 3,
+      retryBaseDelayMs: 0,
+    });
+    (provider as unknown as {
+      client: { models: { generateContent: typeof generateContent } };
+    }).client = { models: { generateContent } };
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const input: AgentProviderInput = {
+      request: "Help my family reconnect.",
+      history: [],
+      family: minimalFamilyContext(),
+    };
+
+    generateContent.mockRejectedValueOnce(Object.assign(new Error("invalid key"), { status: 401 }));
+    await expect(provider.generate(input)).rejects.toMatchObject({ status: 401 });
+    expect(generateContent).toHaveBeenCalledTimes(1);
+
+    generateContent.mockClear();
+    generateContent.mockRejectedValue(Object.assign(new Error("busy"), { status: 503 }));
+    await expect(provider.generate(input)).rejects.toMatchObject({ status: 503 });
+    expect(generateContent).toHaveBeenCalledTimes(3);
+  });
+
+  it("maps malformed JSON, temporary unavailability, and quota errors without persisting a turn", async () => {
     const failures = [
       {
         label: "malformed JSON",
@@ -652,10 +710,10 @@ describe("agent protocol matrix", () => {
         code: "AGENT_PROVIDER_ERROR",
       },
       {
-        label: "generic upstream status",
+        label: "temporary upstream unavailability",
         error: Object.assign(new Error("upstream unavailable"), { status: 503 }),
-        status: 502,
-        code: "AGENT_PROVIDER_ERROR",
+        status: 503,
+        code: "AGENT_PROVIDER_UNAVAILABLE",
       },
       {
         label: "quota",

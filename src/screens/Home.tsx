@@ -7,7 +7,6 @@ import {
   Network,
   ShieldCheck,
   Sparkles,
-  Users,
   X,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
@@ -51,12 +50,8 @@ export function Home({ members, gatherings, setActiveTab, navigateToAssistant }:
     <div className="space-y-4 sm:space-y-8">
       <section className="flex items-center justify-between gap-3" aria-label="Welcome">
         <div className="min-w-0">
-          <h3 className="truncate font-serif text-lg font-bold italic text-ink sm:text-3xl">Marhaba</h3>
-          <p className="mt-0.5 truncate text-xs text-ink/55 sm:mt-1">Your private family workspace</p>
-        </div>
-        <div className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-gold/20 bg-gold/10 px-3 text-gold-ink sm:rounded-2xl sm:px-4">
-          <ShieldCheck size={15} aria-hidden="true" />
-          <span className="text-[10px] font-semibold">Account protected</span>
+          <h3 className="truncate font-serif text-lg font-bold text-ink sm:text-3xl">Marhaba</h3>
+          <p className="mt-0.5 truncate text-xs text-ink/60 sm:mt-1 sm:text-sm">Your family, all in one place</p>
         </div>
       </section>
 
@@ -65,69 +60,39 @@ export function Home({ members, gatherings, setActiveTab, navigateToAssistant }:
           <p className="flex items-center gap-2 text-[10px] font-semibold text-gold-ink sm:text-xs">
             <Sparkles size={14} aria-hidden="true" /> AI family planning
           </p>
-          <h3 className="mt-2 font-serif text-lg font-bold italic leading-tight text-ink sm:mt-4 sm:text-2xl">
+          <h3 className="mt-2 font-serif text-lg font-bold leading-tight text-ink sm:mt-4 sm:text-2xl">
             Plan family time with a helping hand.
           </h3>
-          <p className="mt-1.5 max-w-md text-xs leading-relaxed text-ink/55 sm:mt-3">
-            Ask in everyday language. You review every change before it is saved.
-          </p>
           <div className="mt-3 flex flex-wrap items-center gap-2 sm:mt-6 sm:gap-3">
             <button
               type="button"
               onClick={() => navigateToAssistant('')}
               className="flex min-h-11 items-center rounded-full bg-ink px-5 text-xs font-semibold text-white transition-colors hover:bg-gold-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink focus-visible:ring-offset-2 sm:px-6"
             >
-              Open AI Helper
+              Open SILAH
             </button>
             <button
               type="button"
               onClick={() => setActiveTab('tree')}
               className="flex min-h-11 items-center gap-1.5 rounded-full px-3 text-xs font-semibold text-gold-ink underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink"
             >
-              <Network size={15} aria-hidden="true" /> Open Bond Map
+              <Network size={15} aria-hidden="true" /> Open Family Tree
             </button>
           </div>
         </div>
         <Network className="absolute -bottom-5 -right-4 size-24 text-gold/10 sm:-bottom-10 sm:-right-8 sm:size-48" aria-hidden="true" />
       </section>
 
-      <section className="grid grid-cols-2 gap-3 sm:gap-4" aria-label="Family summary">
-        <button
-          type="button"
-          onClick={() => setActiveTab('tree')}
-          className="min-h-24 rounded-2xl border border-sepia bg-white p-3.5 text-left shadow-sm transition-colors hover:border-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink sm:min-h-0 sm:rounded-3xl sm:p-6"
-        >
-          <div className="flex items-center gap-1.5 text-ink/50">
-            <Users size={15} className="shrink-0 text-gold" aria-hidden="true" />
-            <span className="truncate text-[10px] font-semibold">Family members</span>
-          </div>
-          <p className="mt-1.5 font-serif text-2xl font-bold italic text-ink sm:mt-3 sm:text-3xl">{members.length}</p>
-          <p className="text-[11px] text-ink/45">recorded</p>
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab('calendar')}
-          className="min-h-24 rounded-2xl border border-sepia bg-white p-3.5 text-left shadow-sm transition-colors hover:border-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink sm:min-h-0 sm:rounded-3xl sm:p-6"
-        >
-          <div className="flex items-center gap-1.5 text-ink/50">
-            <CalendarDays size={15} className="shrink-0 text-gold" aria-hidden="true" />
-            <span className="truncate text-[10px] font-semibold">Upcoming</span>
-          </div>
-          <p className="mt-1.5 font-serif text-2xl font-bold italic text-ink sm:mt-3 sm:text-3xl">{upcomingGatherings.length}</p>
-          <p className="text-[11px] text-ink/45">gathering{upcomingGatherings.length === 1 ? '' : 's'}</p>
-        </button>
-      </section>
-
       <section aria-labelledby="family-members-heading">
         <div className="mb-3 flex min-h-11 items-center justify-between border-b border-sepia sm:mb-5 sm:items-baseline sm:pb-3">
-          <h3 id="family-members-heading" className="font-serif text-lg italic text-ink sm:text-xl">Family members</h3>
+          <h3 id="family-members-heading" className="font-serif text-lg text-ink sm:text-xl">Family members</h3>
           <button type="button" onClick={() => setActiveTab('tree')} className="flex min-h-11 items-center gap-1 px-1 text-xs font-semibold text-gold-ink hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink">
             Manage <ArrowRight size={13} aria-hidden="true" />
           </button>
         </div>
         {members.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-sepia bg-white/60 p-5 text-center sm:rounded-3xl sm:p-8">
-            <p className="font-serif italic text-ink/50">No family members are visible yet.</p>
+            <p className="font-serif text-ink/50">No family members are visible yet.</p>
           </div>
         ) : (
           <div className="scrollbar-hide flex snap-x snap-mandatory gap-3 overflow-x-auto overscroll-x-contain pb-2 sm:gap-5 sm:pb-3">
@@ -149,12 +114,12 @@ export function Home({ members, gatherings, setActiveTab, navigateToAssistant }:
 
       <section aria-labelledby="upcoming-gatherings-heading">
         <div className="mb-3 flex min-h-11 items-center justify-between border-b border-sepia sm:mb-5 sm:items-baseline sm:pb-3">
-          <h3 id="upcoming-gatherings-heading" className="font-serif text-lg italic text-ink sm:text-xl">Upcoming gatherings</h3>
+          <h3 id="upcoming-gatherings-heading" className="font-serif text-lg text-ink sm:text-xl">Upcoming gatherings</h3>
           <button type="button" onClick={() => setActiveTab('calendar')} className="min-h-11 px-1 text-xs font-semibold text-gold-ink hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink">Open calendar</button>
         </div>
         {upcomingGatherings.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-sepia bg-white/60 p-5 text-center sm:rounded-3xl sm:p-8">
-            <p className="font-serif italic text-ink/50">No upcoming gathering has been saved.</p>
+            <p className="font-serif text-ink/50">No upcoming gathering has been saved.</p>
             <button type="button" onClick={() => setActiveTab('calendar')} className="mt-1 min-h-11 text-xs font-semibold text-gold-ink hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink">Plan a gathering</button>
           </div>
         ) : (
@@ -215,7 +180,7 @@ export function Home({ members, gatherings, setActiveTab, navigateToAssistant }:
                 <div className="flex items-center gap-4">
                   <img src={selectedMember.photo} alt="" className="size-16 rounded-full border border-sepia object-cover sm:size-20" />
                   <div className="min-w-0">
-                    <h3 className="truncate font-serif text-xl font-bold italic sm:text-2xl">{selectedMember.name}</h3>
+                    <h3 className="truncate font-serif text-xl font-bold sm:text-2xl">{selectedMember.name}</h3>
                     <p className="mt-1 text-xs text-ink/45">{selectedMember.relationship}</p>
                   </div>
                 </div>
@@ -228,8 +193,8 @@ export function Home({ members, gatherings, setActiveTab, navigateToAssistant }:
                 <p className="flex items-start gap-2 text-[11px] leading-relaxed text-ink/45"><ShieldCheck className="mt-0.5 shrink-0" size={14} aria-hidden="true" /> Location is filtered by consent and visibility. Raw coordinates are never shown here.</p>
               </div>
               <div className="app-safe-area-footer sticky bottom-0 grid grid-cols-2 gap-2 border-t border-sepia bg-sand p-3 sm:gap-3 sm:p-5">
-                <button type="button" onClick={() => { setSelectedMember(null); navigateToAssistant(`Help me plan a thoughtful activity with ${selectedMember.name}. Ask for any missing preferences before proposing a plan.`); }} className="min-h-11 rounded-xl bg-ink px-3 text-xs font-semibold text-white transition-colors hover:bg-gold-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink">Ask AI Helper</button>
-                <button type="button" onClick={() => { setSelectedMember(null); setActiveTab('tree'); }} className="min-h-11 rounded-xl border border-sepia bg-white px-3 text-xs font-semibold text-ink/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink">Open Bond Map</button>
+                <button type="button" onClick={() => { setSelectedMember(null); navigateToAssistant(`Help me plan a thoughtful activity with ${selectedMember.name}. Ask for any missing preferences before proposing a plan.`); }} className="min-h-11 rounded-xl bg-ink px-3 text-xs font-semibold text-white transition-colors hover:bg-gold-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink">Ask SILAH</button>
+                <button type="button" onClick={() => { setSelectedMember(null); setActiveTab('tree'); }} className="min-h-11 rounded-xl border border-sepia bg-white px-3 text-xs font-semibold text-ink/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink">Open Family Tree</button>
               </div>
             </motion.div>
           </div>

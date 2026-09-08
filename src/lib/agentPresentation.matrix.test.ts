@@ -26,11 +26,11 @@ interface ActionPresentationCase {
 }
 
 const actionCases: ActionPresentationCase[] = [
-  ['ADD_MEMBER', ['family'], 'tree', 'View Bond Map', false, true, false, 'Confirm change'],
-  ['UPDATE_MEMBER', ['family'], 'tree', 'View Bond Map', false, true, true, 'Confirm change'],
-  ['DELETE_MEMBER', ['family'], 'tree', 'View Bond Map', true, true, false, 'Review & delete'],
-  ['CREATE_RELATIONSHIP', ['family'], 'tree', 'View Bond Map', false, true, false, 'Confirm change'],
-  ['DELETE_RELATIONSHIP', ['family'], 'tree', 'View Bond Map', true, true, false, 'Review & delete'],
+  ['ADD_MEMBER', ['family'], 'tree', 'View Family Tree', false, true, false, 'Confirm change'],
+  ['UPDATE_MEMBER', ['family'], 'tree', 'View Family Tree', false, true, true, 'Confirm change'],
+  ['DELETE_MEMBER', ['family'], 'tree', 'View Family Tree', true, true, false, 'Review & delete'],
+  ['CREATE_RELATIONSHIP', ['family'], 'tree', 'View Family Tree', false, true, false, 'Confirm change'],
+  ['DELETE_RELATIONSHIP', ['family'], 'tree', 'View Family Tree', true, true, false, 'Review & delete'],
   ['CREATE_RECONNECTION_PLAN', ['plans'], 'assistant', 'View Reconnection Plans', false, false, true, 'Confirm change'],
   ['UPDATE_PLAN_STATUS', ['plans'], 'assistant', 'View Reconnection Plans', false, false, true, 'Confirm change'],
   ['CREATE_GATHERING_DRAFT', ['gatherings'], 'calendar', 'View Calendar', false, false, true, 'Confirm change'],

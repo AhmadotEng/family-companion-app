@@ -87,9 +87,9 @@ describe('FamilyTree mobile interaction model', () => {
     const navigationGroup = within(toolbar).getByRole('group', { name: 'Tree navigation and zoom' });
     expect(toolbar.className).toContain('heritage-tree-toolbar');
     expect(navigationGroup.className).toContain('heritage-navigation-group');
-    expect(within(toolbar).getByRole('group', { name: 'Heritage view' })).toBeTruthy();
+    expect(within(toolbar).getByRole('group', { name: 'Family view' })).toBeTruthy();
     expect(toolbar.querySelector('.heritage-toolbar-secondary')?.className).toContain('min-w-0');
-    expect(toolbar.querySelector('[aria-label="Heritage actions"]')?.className).toContain('heritage-landscape-actions');
+    expect(toolbar.querySelector('[aria-label="Family actions"]')?.className).toContain('heritage-landscape-actions');
     expect(toolbar.querySelector('.heritage-mobile-search')?.className).toContain('min-w-0');
     expect(screen.getAllByRole('button', { name: 'Location sharing settings' })).toHaveLength(2);
     expect(screen.getByRole('button', { name: 'Fit entire tree' }).className).toContain('min-h-11');
@@ -279,7 +279,7 @@ describe('FamilyTree mobile interaction model', () => {
 
   it('handles a single-person tree without blank positioning or missing controls', () => {
     renderTree([member('me', 'Ahmad Mustafa', { relationship: 'Me' })]);
-    expect(screen.getByText('1 person in your Heritage tree')).toBeTruthy();
+    expect(screen.getByText('1 person in your Family tree')).toBeTruthy();
     expect(screen.getByRole('button', { name: /Ahmad Mustafa, Focused person/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Fit entire tree' })).toBeTruthy();
   });

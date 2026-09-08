@@ -56,16 +56,16 @@ describe('Home mobile dashboard', () => {
     );
 
     expect(screen.getByText('Marhaba')).toBeTruthy();
-    expect(screen.getByText('Account protected')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Open AI Helper' })).toBeTruthy();
-    expect(screen.getByRole('region', { name: 'Family summary' })).toBeTruthy();
+    expect(screen.queryByText('Account protected')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open SILAH' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Family summary' })).toBeNull();
     expect(screen.getByRole('heading', { name: 'Family members' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Upcoming gatherings' })).toBeTruthy();
     expect(screen.getByText('Friday picnic')).toBeTruthy();
 
-    await user.click(screen.getByRole('button', { name: 'Open AI Helper' }));
+    await user.click(screen.getByRole('button', { name: 'Open SILAH' }));
     expect(navigateToAssistant).toHaveBeenCalledWith('');
-    await user.click(screen.getByRole('button', { name: 'Open Bond Map' }));
+    await user.click(screen.getByRole('button', { name: 'Open Family Tree' }));
     expect(setActiveTab).toHaveBeenCalledWith('tree');
   });
 

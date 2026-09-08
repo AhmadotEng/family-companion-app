@@ -577,6 +577,43 @@ export interface GeminiAgentProviderOptions {
   apiKey: string;
   model: string;
   timeoutMs: number;
+  /** Total calls for transient 429/500/503 failures, including the first call. */
+  maxAttempts?: number;
+  /** Initial retry delay. Each later retry doubles this value. */
+  retryBaseDelayMs?: number;
+}
+
+const DEFAULT_GEMINI_MAX_ATTEMPTS = 3;
+const MAX_GEMINI_MAX_ATTEMPTS = 5;
+const DEFAULT_GEMINI_RETRY_BASE_DELAY_MS = 250;
+const MAX_GEMINI_RETRY_DELAY_MS = 5_000;
+const RETRYABLE_GEMINI_STATUS_CODES = new Set([429, 500, 503]);
+
+function providerErrorStatus(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null || !("status" in error)) return undefined;
+  const status = Number((error as { status?: unknown }).status);
+  return Number.isFinite(status) ? status : undefined;
+}
+
+function abortedProviderError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  return Object.assign(new Error("The AI provider request was aborted."), { name: "AbortError" });
+}
+
+function waitForGeminiRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortedProviderError(signal));
+
+  return new Promise((resolve, reject) => {
+    const handle = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, delayMs);
+    const abort = () => {
+      clearTimeout(handle);
+      reject(abortedProviderError(signal!));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 
@@ -629,37 +666,70 @@ export class GeminiAgentProvider implements AgentProvider {
   readonly requiresExternalDataConsent = true;
   readonly modelName: string;
   private readonly client: GoogleGenAI;
+  private readonly maxAttempts: number;
+  private readonly retryBaseDelayMs: number;
 
   constructor(private readonly options: GeminiAgentProviderOptions) {
     if (!options.apiKey.trim()) throw new Error("A Gemini API key is required.");
     if (!options.model.trim()) throw new Error("A Gemini model is required.");
     this.modelName = options.model;
+    this.maxAttempts = Number.isInteger(options.maxAttempts)
+      && options.maxAttempts! >= 1
+      && options.maxAttempts! <= MAX_GEMINI_MAX_ATTEMPTS
+      ? options.maxAttempts!
+      : DEFAULT_GEMINI_MAX_ATTEMPTS;
+    this.retryBaseDelayMs = Number.isFinite(options.retryBaseDelayMs)
+      && options.retryBaseDelayMs! >= 0
+      ? Math.min(Math.floor(options.retryBaseDelayMs!), MAX_GEMINI_RETRY_DELAY_MS)
+      : DEFAULT_GEMINI_RETRY_BASE_DELAY_MS;
     this.client = new GoogleGenAI({ apiKey: options.apiKey });
   }
 
   async generate(input: AgentProviderInput): Promise<AgentProviderDecision> {
-    const response = await this.client.models.generateContent({
-      model: this.options.model,
-      contents: JSON.stringify({
-        currentRequest: input.request,
-        previousConversation: input.history,
-        permittedFamilyContext: input.family,
-      }),
-      config: {
-        abortSignal: input.signal,
-        httpOptions: { timeout: this.options.timeoutMs },
-        systemInstruction: GEMINI_AGENT_SYSTEM_INSTRUCTION,
-        // Gemini 3.5 Flash defaults to medium reasoning. This task is strict
-        // intent extraction, so minimal thinking preserves enough of the
-        // shared output budget for a complete JSON action payload.
-        thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
-        maxOutputTokens: 4_096,
-        responseMimeType: "application/json",
-        responseJsonSchema: GEMINI_RESPONSE_JSON_SCHEMA,
-      },
-    });
+    let response: { text?: string } | undefined;
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      try {
+        response = await this.client.models.generateContent({
+          model: this.options.model,
+          contents: JSON.stringify({
+            currentRequest: input.request,
+            previousConversation: input.history,
+            permittedFamilyContext: input.family,
+          }),
+          config: {
+            abortSignal: input.signal,
+            httpOptions: { timeout: this.options.timeoutMs },
+            systemInstruction: GEMINI_AGENT_SYSTEM_INSTRUCTION,
+            // Gemini 3.5 Flash and Flash-Lite both support minimal reasoning.
+            // This task is strict intent extraction, so minimal thinking keeps
+            // enough of the shared output budget for a complete JSON payload.
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+            maxOutputTokens: 4_096,
+            responseMimeType: "application/json",
+            responseJsonSchema: GEMINI_RESPONSE_JSON_SCHEMA,
+          },
+        });
+        break;
+      } catch (error) {
+        const status = providerErrorStatus(error);
+        if (
+          input.signal?.aborted
+          || status === undefined
+          || !RETRYABLE_GEMINI_STATUS_CODES.has(status)
+          || attempt === this.maxAttempts
+        ) {
+          throw error;
+        }
+        const delayMs = Math.min(
+          this.retryBaseDelayMs * (2 ** (attempt - 1)),
+          MAX_GEMINI_RETRY_DELAY_MS,
+        );
+        console.warn(`Gemini returned ${status}; retrying attempt ${attempt + 1}/${this.maxAttempts} in ${delayMs}ms.`);
+        await waitForGeminiRetry(delayMs, input.signal);
+      }
+    }
 
-    if (!response.text) throw new Error("The Gemini response was empty.");
+    if (!response?.text) throw new Error("The Gemini response was empty.");
     return providerDecisionSchema.parse(JSON.parse(response.text));
   }
 }
@@ -751,7 +821,7 @@ function contextLimitError(category: string): HttpError {
   return new HttpError(
     413,
     "AGENT_CONTEXT_TOO_LARGE",
-    `The authorized family ${category} is too large for the AI Helper to process safely. No data was sent to the AI provider and no conversation or family data was changed.`,
+    `The authorized family ${category} is too large for SILAH to process safely. No data was sent to the AI provider and no conversation or family data was changed.`,
   );
 }
 
@@ -1331,7 +1401,7 @@ function getPermittedFamilyContext(
         "These are incomplete administrative records and do not measure affection, wellbeing, closeness, or intent.",
         "Invitation and attendance records may not include gatherings organized outside this application.",
         "Memories without explicit AI-processing consent, memory contents, member notes, contact details, media, exact coordinates, and invitation tokens are excluded.",
-        "Activities are prototype samples; availability and venue details are not verified live.",
+        "Activity suggestions use real UAE locations; confirm current hours, prices, and availability before visiting.",
       ],
     },
   };
@@ -3335,17 +3405,21 @@ function applyReconnectionPlan(
 
 function sendAgentError(error: unknown): never {
   if (error instanceof HttpError) throw error;
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "status" in error &&
-    Number((error as { status?: unknown }).status) === 429
-  ) {
+  const status = providerErrorStatus(error);
+  if (status === 429) {
     console.warn("Agent provider quota exhausted.");
     throw new HttpError(
       429,
       "AGENT_QUOTA_EXHAUSTED",
       "The Gemini API quota is currently exhausted. No conversation or family data was saved. Try again after the provider quota resets.",
+    );
+  }
+  if (status === 503) {
+    console.warn("Agent provider remained unavailable after automatic retries.");
+    throw new HttpError(
+      503,
+      "AGENT_PROVIDER_UNAVAILABLE",
+      "Gemini is temporarily busy. The app retried automatically, and no conversation or family data was saved. Please try again shortly.",
     );
   }
   console.error("Agent provider error", error);
@@ -3493,7 +3567,7 @@ export function registerAgentRoutes(
               id: row.id,
               role: row.role,
               kind: "message" as const,
-              message: `${row.content_text} The proposal controls could not be restored safely. Ask the AI Helper to prepare a new proposal.`,
+              message: `${row.content_text} The proposal controls could not be restored safely. Ask SILAH to prepare a new proposal.`,
               createdAt: row.created_at,
             };
           }

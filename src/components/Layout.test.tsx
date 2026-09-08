@@ -45,24 +45,22 @@ describe('Layout mobile shell', () => {
     const navButtons = within(navigation).getAllByRole('button');
     expect(navButtons).toHaveLength(5);
     expect(navButtons.map(button => button.textContent)).toEqual([
-      'Dashboard',
-      'AI Helper',
-      'Activities',
-      'Heritage',
+      'Home',
+      'Family',
       'Gatherings',
+      'Memories',
+      'Activities',
     ]);
-    expect(within(navigation).queryByText('Archive')).toBeNull();
-    expect(within(navigation).getByRole('button', { name: 'Dashboard' }).getAttribute('aria-current')).toBe('page');
+    expect(within(navigation).getByRole('button', { name: 'Home' }).getAttribute('aria-current')).toBe('page');
     expect(navButtons.every(button => button.className.split(' ').includes('text-xs'))).toBe(true);
     expect(navButtons.every(button => !button.className.split(' ').includes('text-[10px]'))).toBe(true);
-    expect(within(navigation).getByRole('button', { name: 'AI Helper' }).className).toContain('text-ink/65');
+    expect(within(navigation).getByRole('button', { name: 'Family' }).className).toContain('text-ink/65');
 
     await user.click(screen.getByRole('button', { name: 'Open account menu' }));
     const menu = screen.getByRole('menu', { name: 'Account menu' });
     expect(within(menu).getByRole('menuitem', { name: 'Profile and account' }).hidden).toBe(false);
     expect(within(menu).getByRole('menuitem', { name: 'Privacy and location' }).hidden).toBe(false);
-    expect(within(menu).getByRole('menuitem', { name: 'Memories and rewards' }).hidden).toBe(false);
-    expect(within(menu).getByRole('menuitem', { name: 'Archive' }).hidden).toBe(false);
+    expect(within(menu).queryByRole('menuitem', { name: 'Archive' })).toBeNull();
     expect((within(menu).getByRole('menuitem', { name: 'Sign out' }) as HTMLButtonElement).disabled).toBe(false);
 
     await user.click(within(menu).getByRole('menuitem', { name: 'Privacy and location' }));
@@ -71,11 +69,8 @@ describe('Layout mobile shell', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open account menu' }));
     expect(screen.queryByRole('menu')).toBeNull();
 
-    await user.click(screen.getByRole('button', { name: 'Open account menu' }));
-    const reopenedMenu = screen.getByRole('menu', { name: 'Account menu' });
-    await user.click(within(reopenedMenu).getByRole('menuitem', { name: 'Archive' }));
+    await user.click(within(navigation).getByRole('button', { name: 'Memories' }));
     expect(setActiveTab).toHaveBeenCalledWith('archive');
-    expect(screen.queryByRole('menu')).toBeNull();
 
     await user.click(screen.getByRole('button', { name: 'Open account menu' }));
     await user.click(screen.getByRole('menuitem', { name: 'Sign out' }));
@@ -104,7 +99,7 @@ describe('Layout mobile shell', () => {
 
     await user.click(accountButton);
     expect(accountButton.className).toContain('text-gold-ink');
-    expect(screen.getByText('Heritage & Harmony').className).toContain('app-shell-tagline');
+    expect(screen.queryByText('Heritage & Harmony')).toBeNull();
     expect(screen.getByRole('menuitem', { name: 'Profile and account' }).className).not.toContain('app-account-trigger');
     expect(accountButton.getAttribute('aria-expanded')).toBe('true');
     await user.keyboard('{Escape}');
@@ -177,9 +172,10 @@ describe('Layout mobile shell', () => {
         <p>Page content</p>
       </Layout>,
     );
-    const brandWord = container.querySelector('.app-shell-brand h1 span');
-    expect(brandWord?.className).toContain('text-gold');
-    expect(brandWord?.className).not.toContain('text-gold-ink');
+    const brandMark = container.querySelector('.app-shell-brand img');
+    const brandWord = container.querySelector('.app-shell-brand h1');
+    expect(brandMark?.getAttribute('src')).toBe('/assets/ailah-mark.png');
+    expect(brandWord?.className).toContain('text-ink');
   });
 
   it('uses the readable gold token for visible keyboard focus across modified UI', () => {

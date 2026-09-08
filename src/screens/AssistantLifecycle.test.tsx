@@ -279,7 +279,7 @@ describe('Assistant conversation and confirmation lifecycle', () => {
     },
   );
 
-  it('shows live invitation links without automatically navigating or opening WhatsApp', async () => {
+  it('shows live copyable invitation links without navigating or opening a sharing app', async () => {
     const privateToken = 'private-live-token';
     apiRequestMock
       .mockResolvedValueOnce(proposalResponse('PREPARE_INVITATION_LINKS'))
@@ -309,25 +309,17 @@ describe('Assistant conversation and confirmation lifecycle', () => {
     await user.click(await screen.findByRole('button', { name: 'Review & prepare links' }));
 
     expect(await screen.findByText('Links prepared, not sent')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Open WhatsApp' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy link' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Open WhatsApp' })).toBeNull();
     expect(onNavigateToActionResult).not.toHaveBeenCalled();
     expect(openSpy).not.toHaveBeenCalled();
     for (let index = 0; index < window.sessionStorage.length; index += 1) {
       expect(window.sessionStorage.getItem(window.sessionStorage.key(index)!)).not.toContain(privateToken);
     }
 
-    await user.click(screen.getByRole('button', { name: 'Open WhatsApp' }));
-    expect(openSpy).toHaveBeenCalledTimes(1);
-    expect(openSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/^https:\/\/wa\.me\/\?text=/),
-      '_blank',
-      'noopener,noreferrer',
-    );
-    expect(onNavigateToActionResult).not.toHaveBeenCalled();
-
     await user.click(screen.getByRole('button', { name: /I copied the links/i }));
     expect(onNavigateToActionResult).toHaveBeenCalledWith('PREPARE_INVITATION_LINKS');
-    expect(openSpy).toHaveBeenCalledTimes(1);
+    expect(openSpy).not.toHaveBeenCalled();
   });
 
   it('ignores a late invitation-link confirmation after the active family changes', async () => {

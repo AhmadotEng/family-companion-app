@@ -1,18 +1,21 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import {
-  Archive,
   Calendar,
-  Gift,
+  Coins,
   Home,
+  Images,
+  Languages,
   LogOut,
   MapPin,
   MessageSquare,
   ShieldCheck,
   UserCircle,
   Users,
+  X,
 } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
 import { cn } from '../lib/utils';
+import { useLanguage } from '../i18n';
 
 interface LayoutProps {
   children: ReactNode;
@@ -22,21 +25,22 @@ interface LayoutProps {
   onSignOut?: () => void | Promise<void>;
   onOpenLocationSettings?: () => void;
   accountName?: string;
+  rewardPoints?: number;
+  onOpenRewards?: () => void;
+  onToggleAssistant?: () => void;
 }
 
 const primaryTabs = [
-  { id: 'home', icon: Home, label: 'Dashboard' },
-  { id: 'assistant', icon: MessageSquare, label: 'AI Helper' },
-  { id: 'activities', icon: MapPin, label: 'Activities' },
-  { id: 'tree', icon: Users, label: 'Heritage' },
+  { id: 'home', icon: Home, label: 'Home' },
+  { id: 'tree', icon: Users, label: 'Family' },
   { id: 'calendar', icon: Calendar, label: 'Gatherings' },
+  { id: 'archive', icon: Images, label: 'Memories' },
+  { id: 'activities', icon: MapPin, label: 'Activities' },
 ];
 
 const accountItems = [
   { id: 'more', icon: UserCircle, label: 'Profile and account' },
   { id: 'tree', icon: ShieldCheck, label: 'Privacy and location' },
-  { id: 'archive', icon: Gift, label: 'Memories and rewards' },
-  { id: 'archive', icon: Archive, label: 'Archive' },
 ];
 
 export function Layout({
@@ -47,13 +51,17 @@ export function Layout({
   onSignOut,
   onOpenLocationSettings,
   accountName,
+  rewardPoints,
+  onOpenRewards,
+  onToggleAssistant,
 }: LayoutProps) {
+  const { language, toggleLanguage, t } = useLanguage();
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const accountButtonRef = useRef<HTMLButtonElement>(null);
   const accountMenuRef = useRef<HTMLDivElement>(null);
   const reduceMotion = useReducedMotion();
   const mobileTitle = primaryTabs.find(tab => tab.id === activeTab)?.label
-    ?? (activeTab === 'archive' ? 'Archive' : activeTab === 'more' ? 'Account' : title);
+    ?? (activeTab === 'assistant' ? 'SILAH' : activeTab === 'more' ? 'Account' : activeTab === 'rewards' ? 'Rewards' : title);
 
   useEffect(() => {
     setAccountMenuOpen(false);
@@ -104,6 +112,10 @@ export function Layout({
 
   const navigateFromAccountMenu = (tab: string) => {
     setAccountMenuOpen(false);
+    if (tab === 'rewards') {
+      onOpenRewards?.();
+      return;
+    }
     setActiveTab(tab);
   };
 
@@ -116,16 +128,39 @@ export function Layout({
   };
 
   return (
-    <div className="flex h-[100dvh] max-w-full flex-col overflow-hidden bg-sand font-sans">
+    <div className="relative flex h-[100dvh] max-w-full flex-col overflow-hidden bg-sand font-sans">
       <header className="app-shell-header relative z-30 flex shrink-0 items-center justify-between border-b border-sepia bg-white px-4 pb-2.5 sm:px-8 sm:pb-5">
-        <div className="app-shell-brand">
-          <h1 className="font-serif text-lg font-bold leading-[0.95] tracking-tight text-ink sm:text-2xl">
-            UAE FAMILY<br />
-            <span className="font-sans text-sm font-normal uppercase tracking-[0.18em] text-gold opacity-80 sm:text-lg sm:tracking-widest">Companion</span>
+        <div className="app-shell-brand flex min-w-0 items-center gap-2.5 sm:gap-3">
+          <img src="/assets/ailah-mark.png" alt="" className="size-9 shrink-0 object-contain sm:size-12" />
+          <h1 className="truncate text-xl font-semibold uppercase leading-none tracking-[0.25em] text-ink sm:text-3xl sm:tracking-[0.32em]" data-no-localize>
+            AILAH
           </h1>
-          <p className="app-shell-tagline mt-1 text-[8px] font-bold uppercase tracking-[0.18em] text-ink/40 sm:mt-2 sm:text-[10px] sm:tracking-widest">Heritage &amp; Harmony</p>
         </div>
 
+        <div className="flex items-center gap-2 sm:gap-3">
+        <button
+          type="button"
+          data-no-localize
+          onClick={toggleLanguage}
+          aria-label={language === 'en' ? 'Switch to Arabic' : 'Switch to English'}
+          title={language === 'en' ? 'العربية' : 'English'}
+          className="flex min-h-11 items-center gap-1.5 rounded-full border border-sepia bg-sand px-3 text-xs font-bold text-ink/70 transition-colors hover:border-gold-ink hover:text-gold-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink focus-visible:ring-offset-2"
+        >
+          <Languages size={17} aria-hidden="true" />
+          <span data-no-localize>{language === 'en' ? 'العربية' : 'EN'}</span>
+        </button>
+        {typeof rewardPoints === 'number' && (
+          <button
+            type="button"
+            onClick={() => onOpenRewards?.()}
+            aria-label={`${rewardPoints} reward points. Open rewards`}
+            title="Rewards"
+            className="flex min-h-11 items-center gap-1.5 rounded-full border border-sepia bg-sand px-3 text-sm font-semibold text-ink transition-colors hover:border-gold-ink hover:text-gold-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink focus-visible:ring-offset-2"
+          >
+            <Coins size={18} className="text-gold" aria-hidden="true" />
+            <span className="tabular-nums">{rewardPoints.toLocaleString()}</span>
+          </button>
+        )}
         <div className="relative">
           <button
             ref={accountButtonRef}
@@ -171,7 +206,7 @@ export function Layout({
                     className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm font-semibold text-ink/70 transition-colors hover:bg-sand hover:text-ink focus-visible:bg-sand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink"
                   >
                     <Icon className="shrink-0 text-gold" size={18} aria-hidden="true" />
-                    {item.label}
+                    {t(item.label)}
                   </button>
                 );
               })}
@@ -187,10 +222,11 @@ export function Layout({
                 className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm font-semibold text-red-700 transition-colors hover:bg-red-50 focus-visible:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 <LogOut className="shrink-0" size={18} aria-hidden="true" />
-                Sign out
+                {t('Sign out')}
               </button>
             </div>
           )}
+        </div>
         </div>
       </header>
 
@@ -218,15 +254,26 @@ export function Layout({
           data-screen={activeTab}
         >
           <div className="app-screen-heading mb-4 flex shrink-0 items-baseline justify-between border-b border-sepia pb-2.5 sm:mb-8 sm:pb-4">
-            <h2 className="font-serif text-2xl italic text-ink sm:text-3xl">
-              <span className="sm:hidden">{mobileTitle}</span>
+            <h2 className="font-serif text-2xl text-ink sm:text-3xl">
+              <span className="sm:hidden">{t(mobileTitle)}</span>
               <span className="hidden sm:inline">{title}</span>
             </h2>
-            <span className="hidden text-[10px] font-bold tracking-widest text-ink/40 sm:inline">UAE / {mobileTitle}</span>
           </div>
           {children}
         </motion.div>
       </main>
+
+      <button
+        type="button"
+        onClick={() => onToggleAssistant?.()}
+        aria-label={activeTab === 'assistant' ? 'Close SILAH' : 'Open SILAH'}
+        title={t('SILAH')}
+        className="absolute bottom-24 right-4 z-40 flex size-14 items-center justify-center rounded-full bg-ink text-white shadow-xl transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink focus-visible:ring-offset-2 sm:bottom-28 sm:right-8"
+      >
+        {activeTab === 'assistant'
+          ? <X size={24} aria-hidden="true" />
+          : <MessageSquare size={24} aria-hidden="true" />}
+      </button>
 
       <nav
         aria-label="Primary navigation"
@@ -247,7 +294,7 @@ export function Layout({
               )}
             >
               <Icon size={20} strokeWidth={isActive ? 2.4 : 2} aria-hidden="true" />
-              <span className="max-w-full truncate">{tab.label}</span>
+              <span className="max-w-full truncate">{t(tab.label)}</span>
               {isActive && <span aria-hidden="true" className="absolute bottom-1 h-0.5 w-5 rounded-full bg-gold" />}
             </button>
           );

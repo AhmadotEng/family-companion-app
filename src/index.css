@@ -1,9 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Inter:wght@300;400;600&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-serif: "Libre Baskerville", serif;
+  --font-sans: "Nunito", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", ui-sans-serif, system-ui, sans-serif;
   
   --color-sand: #F7F5F0;
   --color-ink: #1C1C1C;
@@ -31,6 +31,29 @@
     overflow-x: clip;
     overscroll-behavior-x: none;
     @apply bg-sand text-ink;
+  }
+
+  html[dir="rtl"] body {
+    font-family: Tahoma, Arial, ui-sans-serif, system-ui, sans-serif;
+  }
+
+  html[dir="rtl"] .font-serif,
+  html[dir="rtl"] .font-display {
+    font-family: Tahoma, Arial, ui-sans-serif, system-ui, sans-serif;
+  }
+
+  html[dir="rtl"] .text-left {
+    text-align: right;
+  }
+
+  html[dir="rtl"] input,
+  html[dir="rtl"] textarea,
+  html[dir="rtl"] select {
+    text-align: right;
+  }
+
+  html[dir="rtl"] .app-shell-brand h1 {
+    direction: ltr;
   }
 
   button,

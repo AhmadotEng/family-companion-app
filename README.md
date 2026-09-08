@@ -1,6 +1,6 @@
-# Family Companion
+# AILAH
 
-Family Companion is a private family coordination app built with React, TypeScript, Express, and SQLite. It turns the original UI prototype into a persisted workflow:
+AILAH is a private family coordination app built with React, TypeScript, Express, and SQLite. It turns the original UI prototype into a persisted workflow:
 
 **Bond Map → AI reconnection plan → reviewed gathering → private RSVP links → completed gathering → memory → family points**
 
@@ -65,7 +65,7 @@ GEMINI_API_KEY="your-key"
 
 Keep the key server-side: never use a `VITE_` prefix, paste it into browser code, share it, or commit `.env`. The repository ignores `.env` and tracks only the placeholder `.env.example`.
 
-Gemini turns default to a 60-second limit. If a valid key works but a slow request times out, set `AGENT_PROVIDER_TIMEOUT_MS="120000"` in `.env` and restart the server; `120000` is the supported maximum.
+Gemini turns default to a 60-second limit. The server automatically retries temporary `429`, `500`, and `503` provider failures up to three times with exponential backoff. If a valid key works but a slow request times out, set `AGENT_PROVIDER_TIMEOUT_MS="120000"` in `.env` and restart the server; `120000` is the supported maximum. For a lower-latency alternative to the default model, set `GEMINI_MODEL="gemini-3.5-flash-lite"`.
 
 ### Test the AI gathering planner manually
 

@@ -227,7 +227,7 @@ export function ReconnectionPlansPanel({
                     <article key={plan.id} className="rounded-2xl border border-sepia/70 bg-sand/20 p-3 sm:p-4">
                       <div className="flex flex-wrap items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
-                          <h3 className="truncate font-serif text-base font-bold italic text-ink">{plan.title}</h3>
+                          <h3 className="truncate font-serif text-base font-bold text-ink">{plan.title}</h3>
                           <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-ink/55">{plan.rationale}</p>
                         </div>
                         <span className={cn(

@@ -16,6 +16,7 @@ interface Migration {
   version: number;
   name: string;
   sql: string;
+  record?: boolean;
 }
 
 const migrations: Migration[] = [
@@ -174,6 +175,56 @@ const migrations: Migration[] = [
     name: "gathering_creation_idempotency",
     sql: GATHERING_CREATION_IDEMPOTENCY_MIGRATION_SQL,
   },
+  {
+    version: 9,
+    name: "uae_activity_demo_catalog",
+    record: false,
+    sql: `
+      UPDATE activities SET
+        title = 'Qasr Al Hosn Family Heritage Walk',
+        category = 'Culture', emirate = 'Abu Dhabi', location_name = 'Qasr Al Hosn',
+        price_range = 'Budget', age_suitability = 'All ages', elderly_friendly = 1,
+        indoor_outdoor = 'Outdoor',
+        description = 'Explore Abu Dhabi’s historic landmark together, with shaded rest stops and plenty of moments for grandparents to share family stories.',
+        estimated_duration = '2 hours', weather_suitability = 'Best in the morning or late afternoon',
+        image_url = '/assets/activity-qasr-al-hosn.png', source_label = 'Qasr Al Hosn',
+        is_sample = 1, updated_at = CURRENT_TIMESTAMP
+      WHERE id = '10000000-0000-4000-8000-000000000001';
+
+      UPDATE activities SET
+        title = 'Louvre Abu Dhabi Family Visit',
+        category = 'Museums', emirate = 'Abu Dhabi', location_name = 'Louvre Abu Dhabi',
+        price_range = 'Premium', age_suitability = 'Children and elders', elderly_friendly = 1,
+        indoor_outdoor = 'Indoor',
+        description = 'Enjoy an easy-paced museum day under the iconic dome, choosing a few favorite artworks to discuss over coffee afterward.',
+        estimated_duration = '2–3 hours', weather_suitability = 'Comfortable year-round',
+        image_url = '/assets/activity-louvre-abu-dhabi.png', source_label = 'Louvre Abu Dhabi',
+        is_sample = 1, updated_at = CURRENT_TIMESTAMP
+      WHERE id = '10000000-0000-4000-8000-000000000002';
+
+      UPDATE activities SET
+        title = 'Al Noor Island Family Picnic',
+        category = 'Outdoors', emirate = 'Sharjah', location_name = 'Al Noor Island',
+        price_range = 'Budget', age_suitability = 'All ages', elderly_friendly = 1,
+        indoor_outdoor = 'Outdoor',
+        description = 'Share a relaxed picnic surrounded by gardens, art and lagoon views, with space for children to explore and elders to unwind.',
+        estimated_duration = '3 hours', weather_suitability = 'Best during cooler months or evenings',
+        image_url = '/assets/activity-al-noor-island.png', source_label = 'Al Noor Island',
+        is_sample = 1, updated_at = CURRENT_TIMESTAMP
+      WHERE id = '10000000-0000-4000-8000-000000000003';
+
+      UPDATE activities SET
+        title = 'Al Fahidi Family Storytelling Majlis',
+        category = 'Culture', emirate = 'Dubai', location_name = 'Al Fahidi Historical Neighbourhood',
+        price_range = 'Free', age_suitability = 'All ages', elderly_friendly = 1,
+        indoor_outdoor = 'Outdoor',
+        description = 'Walk through the traditional lanes, then pause in a courtyard to share family stories and memories across generations.',
+        estimated_duration = '90 minutes', weather_suitability = 'Best in the morning or evening',
+        image_url = '/assets/activity-al-fahidi.png', source_label = 'Al Fahidi Historical Neighbourhood',
+        is_sample = 1, updated_at = CURRENT_TIMESTAMP
+      WHERE id = '10000000-0000-4000-8000-000000000004';
+    `,
+  },
 ];
 
 export interface OpenDatabaseOptions {
@@ -213,9 +264,11 @@ function migrate(database: AppDatabase): void {
 
   const applyMigration = database.transaction((migration: Migration) => {
     database.exec(migration.sql);
-    database
-      .prepare("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)")
-      .run(migration.version, migration.name, new Date().toISOString());
+    if (migration.record !== false) {
+      database
+        .prepare("INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)")
+        .run(migration.version, migration.name, new Date().toISOString());
+    }
   });
 
   for (const migration of migrations) {

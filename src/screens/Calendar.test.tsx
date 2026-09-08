@@ -135,7 +135,7 @@ function calendarElement({
 }
 
 async function submitManualDraft(user: ReturnType<typeof userEvent.setup>, title: string) {
-  await user.click(screen.getByRole('button', { name: 'Plan gathering' }));
+  await user.click(await screen.findByRole('button', { name: 'Plan a gathering' }));
   await screen.findByRole('dialog', { name: 'Plan a gathering' });
   await user.type(await screen.findByLabelText('Title'), title);
   await user.type(screen.getByLabelText('Purpose'), 'A family visit');
@@ -184,11 +184,10 @@ describe('Calendar responsive views', () => {
     expect(today?.getAttribute('aria-current')).toBe('date');
     expect(today?.getAttribute('aria-pressed')).toBe('false');
     expect(screen.queryByRole('region', { name: 'Gathering calendar' })).toBeNull();
-    const planGatheringButton = screen.getByRole('button', { name: 'Plan gathering' });
-    expect(planGatheringButton.className).toContain('fixed');
-    expect(planGatheringButton.className.split(' ')).toContain('bg-gold-ink');
-    expect(planGatheringButton.className.split(' ')).toContain('text-white');
-    expect(planGatheringButton.className.split(' ')).toContain('sm:bg-ink');
+    const planGatheringButton = screen.getByRole('button', { name: 'Plan a gathering' });
+    expect(planGatheringButton.className).toContain('min-h-12');
+    expect(planGatheringButton.className.split(' ')).toContain('bg-gold');
+    expect(planGatheringButton.className.split(' ')).toContain('text-ink');
 
     await user.click(screen.getByRole('button', { name: 'Month' }));
 
@@ -409,7 +408,7 @@ describe('Calendar shared gathering planner', () => {
       }));
       const user = userEvent.setup();
 
-      await user.click(await screen.findByRole('button', { name: 'Prepare links' }));
+      await user.click(await screen.findByRole('button', { name: 'Prepare RSVP links' }));
       await user.click(screen.getByRole('checkbox', { name: /Dad/ }));
       await user.click(screen.getByRole('button', { name: 'Review' }));
       await user.click(screen.getByRole('button', { name: 'Confirm & prepare' }));
@@ -421,7 +420,7 @@ describe('Calendar shared gathering planner', () => {
       }));
       await screen.findByText('New family gathering');
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-      await user.click(screen.getByRole('button', { name: 'Prepare links' }));
+      await user.click(screen.getByRole('button', { name: 'Prepare RSVP links' }));
       await user.click(screen.getByRole('checkbox', { name: /Other Dad/ }));
       await user.click(screen.getByRole('button', { name: 'Review' }));
       await user.click(screen.getByRole('button', { name: 'Confirm & prepare' }));
@@ -897,7 +896,7 @@ describe('Calendar shared gathering planner', () => {
     const user = userEvent.setup();
     render(calendarElement({ selectedFamilyId: familyId, selectedMembers: [dad] }));
 
-    await user.click(await screen.findByRole('button', { name: 'Prepare links' }));
+    await user.click(await screen.findByRole('button', { name: 'Prepare RSVP links' }));
     const inviteDialog = screen.getByRole('dialog', { name: 'Invite to Gathering with unsafe link' });
     const inviteSheet = inviteDialog.querySelector('section');
     expect(inviteDialog.className).toContain('mobile-sheet-overlay');
@@ -960,7 +959,7 @@ describe('Calendar shared gathering planner', () => {
     }));
 
     expect(await screen.findByText('Permission matrix gathering')).toBeTruthy();
-    expect(Boolean(screen.queryByRole('button', { name: 'Prepare links' }))).toBe(canPrepare);
+    expect(Boolean(screen.queryByRole('button', { name: 'Prepare RSVP links' }))).toBe(canPrepare);
     expect(Boolean(screen.queryByRole('button', { name: 'Complete' }))).toBe(canComplete);
   });
 
@@ -981,7 +980,7 @@ describe('Calendar shared gathering planner', () => {
     );
 
     expect((await screen.findAllByText('Future inviting gathering')).length).toBeGreaterThan(0);
-    expect(screen.getByRole('button', { name: 'Prepare links' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Prepare RSVP links' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Complete' })).toBeNull();
   });
 });

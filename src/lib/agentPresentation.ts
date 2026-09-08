@@ -71,7 +71,7 @@ const ACTION_DESTINATIONS: Record<AgentActionType, AgentResultDestination> = {
 };
 
 export const agentWelcomeText =
-  'Marhaba. Ask in plain language. I can help with the Bond Map, gathering drafts and invitation links, verified gathering completion, written memories, rewards-related updates, and reconnection-plan status. What I can change depends on your family role and ownership of the item. For privacy, I can identify an existing memory only when that memory was allowed for AI processing; every memory remains manageable directly in the Archive. I always show the exact action for approval before anything changes, and I never send invitations automatically.';
+  'Marhaba, I’m SILAH. I can help you plan gatherings, find family activities, add relatives, and organize memories. What would you like to do together?';
 
 export const agentDataDisclosureText =
   'Gemini receives this request and up to 20 recent messages from this agent conversation. Any phone number, email, profile note, memory text, or other private information you typed in those messages is therefore sent again with this request. Gemini also receives the family name, current server date/time and Dubai timezone, family member IDs and display names, relationships, consent-visible city/emirate or coarse distance bands, authorized gathering and invitation-status metadata, AI-consented memory labels, plan-status metadata, engagement counts, reward totals, and sample activities. Database-derived context excludes contact details, profile notes, memory contents and media, exact coordinates, and invitation tokens or URLs. Prompts and replies are retained privately on this server for up to 30 days unless you delete the conversation sooner. This approval applies only to the next request.';
@@ -79,7 +79,7 @@ export const agentDataDisclosureText =
 const adminQuickPrompts = [
   'Add my brother Khaled, born 1985-04-12.',
   'Create a gathering draft for a family dinner tomorrow at 7 PM.',
-  'Prepare WhatsApp invitation links for my next gathering.',
+  'Prepare RSVP links for my next gathering.',
   'Complete the past gathering using its Going RSVPs.',
   'Save a private written memory for my completed gathering.',
   'Mark my latest reconnection plan as accepted.',
@@ -136,7 +136,7 @@ export function getAgentResultDestination(actionType: string): AgentResultDestin
 
 export function getAgentResultDestinationLabel(actionType: string): string | undefined {
   const destination = getAgentResultDestination(actionType);
-  if (destination === 'tree') return 'View Bond Map';
+  if (destination === 'tree') return 'View Family Tree';
   if (destination === 'assistant') return 'View Reconnection Plans';
   if (destination === 'calendar') return 'View Calendar';
   if (destination === 'archive') return 'View Memories & Rewards';

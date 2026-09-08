@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Accessibility,
   AlertCircle,
+  CalendarPlus,
   ChevronDown,
   Clock,
   Filter,
@@ -21,9 +22,10 @@ import type { FamilyMember } from '../types';
 interface ActivitiesProps {
   members: FamilyMember[];
   onPlanActivity: (activity: ActivityListing) => void;
+  onPlanManually?: (activity: ActivityListing) => void;
 }
 
-export function Activities({ members, onPlanActivity }: ActivitiesProps) {
+export function Activities({ members, onPlanActivity, onPlanManually }: ActivitiesProps) {
   const [activities, setActivities] = useState<ActivityListing[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -77,11 +79,11 @@ export function Activities({ members, onPlanActivity }: ActivitiesProps) {
 
   return (
     <div className="space-y-4 sm:space-y-7">
-      <section className="flex min-h-[7rem] flex-col justify-center rounded-3xl border border-sepia bg-ink p-4 text-white shadow-lg sm:min-h-0 sm:rounded-[2rem] sm:p-7">
-        <p className="flex items-center gap-2 text-[10px] font-semibold text-gold sm:text-xs"><ShieldCheck size={14} aria-hidden="true" /> Curated activity catalog</p>
-        <h3 className="mt-1.5 font-serif text-lg italic leading-tight sm:mt-3 sm:text-2xl">Find a simple way to spend time together.</h3>
-        <p className="mt-1.5 text-[11px] leading-relaxed text-white/60 sm:mt-2 sm:max-w-xl sm:text-xs">
-          Prototype listings are clearly labelled; availability and pricing are not live.
+      <section className="flex min-h-[8rem] flex-col justify-center rounded-3xl border border-sepia bg-ink p-5 text-white shadow-lg sm:min-h-0 sm:rounded-[2rem] sm:p-8">
+        <p className="flex items-center gap-2 text-xs font-semibold text-gold"><ShieldCheck size={15} aria-hidden="true" /> Curated for family time</p>
+        <h3 className="mt-2 font-serif text-xl leading-tight sm:mt-3 sm:text-2xl">Find a place everyone will enjoy.</h3>
+        <p className="mt-2 max-w-xl text-sm leading-relaxed text-white/75">
+          Choose an activity everyone can enjoy, then plan it with SILAH or build the gathering yourself.
         </p>
       </section>
 
@@ -130,7 +132,7 @@ export function Activities({ members, onPlanActivity }: ActivitiesProps) {
         >
           <label className="text-xs font-semibold text-ink/55">Emirate<select value={emirate} onChange={event => setEmirate(event.target.value)} className="mt-1 block min-h-11 w-full rounded-xl border border-sepia bg-white px-3 py-2 text-base font-normal text-ink sm:text-xs">{emirates.map(value => <option key={value}>{value}</option>)}</select></label>
           <label className="text-xs font-semibold text-ink/55">Category<select value={category} onChange={event => setCategory(event.target.value)} className="mt-1 block min-h-11 w-full rounded-xl border border-sepia bg-white px-3 py-2 text-base font-normal text-ink sm:text-xs">{categories.map(value => <option key={value}>{value}</option>)}</select></label>
-          <label className="text-xs font-semibold text-ink/55">Budget<select value={price} onChange={event => setPrice(event.target.value)} className="mt-1 block min-h-11 w-full rounded-xl border border-sepia bg-white px-3 py-2 text-base font-normal text-ink sm:text-xs">{['All', 'Free', 'Budget', 'Premium'].map(value => <option key={value}>{value}</option>)}</select></label>
+          <label className="text-xs font-semibold text-ink/55">Price range<select value={price} onChange={event => setPrice(event.target.value)} className="mt-1 block min-h-11 w-full rounded-xl border border-sepia bg-white px-3 py-2 text-base font-normal text-ink sm:text-xs">{['All', 'Free', 'Budget', 'Premium'].map(value => <option key={value}>{value}</option>)}</select></label>
           <label className="flex min-h-11 items-center gap-2 self-end rounded-xl border border-sepia px-3 py-2 text-sm text-ink/65"><input type="checkbox" checked={elderFriendly} onChange={event => setElderFriendly(event.target.checked)} className="size-4 accent-gold" /> Elder-friendly</label>
         </div>
       </section>
@@ -143,17 +145,17 @@ export function Activities({ members, onPlanActivity }: ActivitiesProps) {
       )}
 
       {loading ? (
-        <div className="flex min-h-32 items-center justify-center gap-2 rounded-2xl border border-sepia bg-white text-sm text-ink/45 sm:min-h-52 sm:rounded-[2rem]"><LoaderCircle className="animate-spin text-gold" size={20} aria-hidden="true" /> Loading catalog…</div>
+        <div className="flex min-h-32 items-center justify-center gap-2 rounded-2xl border border-sepia bg-white text-sm text-ink/65 sm:min-h-52 sm:rounded-[2rem]"><LoaderCircle className="animate-spin text-gold" size={20} aria-hidden="true" /> Loading catalog…</div>
       ) : filtered.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-sepia bg-white/60 p-6 text-center sm:rounded-[2rem] sm:p-10">
           <Filter className="mx-auto text-gold" size={25} aria-hidden="true" />
-          <p className="mt-3 font-serif italic text-ink/50">No catalog rows match these filters.</p>
+          <p className="mt-3 font-serif text-ink/65">No activities match these filters.</p>
         </div>
       ) : (
         <section aria-labelledby="activity-results-heading">
           <div className="mb-2 flex min-h-11 items-center justify-between sm:mb-3">
-            <h3 id="activity-results-heading" className="font-serif text-lg italic text-ink sm:text-xl">Activities</h3>
-            <p role="status" className="text-xs text-ink/45">{filtered.length} result{filtered.length === 1 ? '' : 's'}</p>
+            <h3 id="activity-results-heading" className="font-serif text-lg text-ink sm:text-xl">Activities</h3>
+            <p role="status" className="text-xs text-ink/65">{`${filtered.length} result${filtered.length === 1 ? '' : 's'}`}</p>
           </div>
           <div className="grid gap-3 sm:gap-5">
             {filtered.map(activity => (
@@ -167,23 +169,23 @@ export function Activities({ members, onPlanActivity }: ActivitiesProps) {
                   <div className="min-w-0 p-3.5 sm:p-6">
                     <div className="flex items-start justify-between gap-2 sm:gap-3">
                       <div className="min-w-0">
-                        <p className="truncate text-[10px] font-semibold text-gold-ink">{activity.category} · {activity.isSample ? 'Prototype sample' : 'Verified listing'}</p>
-                        <h3 className="mt-0.5 font-serif text-base font-bold italic leading-tight text-ink sm:mt-1 sm:text-xl">{activity.title}</h3>
+                        <p className="truncate text-xs font-semibold text-gold-ink">{activity.category}</p>
+                        <h3 className="mt-0.5 font-serif text-base font-bold leading-tight text-ink sm:mt-1 sm:text-xl">{activity.title}</h3>
                       </div>
-                      <span className="hidden shrink-0 rounded-full bg-sand px-3 py-1 text-[10px] font-semibold text-ink/50 sm:inline">{activity.priceRange}</span>
+                      <span className="hidden shrink-0 rounded-full bg-sand px-3 py-1 text-xs font-semibold text-ink/70 sm:inline">{activity.priceRange}</span>
                     </div>
-                    <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-ink/60 sm:mt-3 sm:text-xs">{activity.description}</p>
-                    <div className="mt-2 grid gap-1 text-[10px] text-ink/50 sm:mt-4 sm:flex sm:flex-wrap sm:gap-x-5 sm:gap-y-2">
+                    <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-ink/75 sm:mt-3">{activity.description}</p>
+                    <div className="mt-3 grid gap-1.5 text-xs text-ink/70 sm:mt-4 sm:flex sm:flex-wrap sm:gap-x-5 sm:gap-y-2">
                       <span className="flex min-w-0 items-center gap-1.5"><MapPin size={12} className="shrink-0 text-gold" aria-hidden="true" /><span className="truncate">{activity.location}, {activity.emirate}</span></span>
                       <span className="flex items-center gap-1.5"><Clock size={12} className="shrink-0 text-gold" aria-hidden="true" /> {activity.estimatedDuration}</span>
                       {activity.elderlyFriendly && <span className="hidden items-center gap-1.5 sm:flex"><Accessibility size={12} className="text-gold" aria-hidden="true" /> Elder-friendly note</span>}
                     </div>
                     <div className="mt-2.5 flex items-end justify-between gap-2 border-t border-sepia/60 pt-2.5 sm:mt-5 sm:items-center sm:gap-3 sm:pt-4">
-                      <div className="min-w-0">
-                        <p className="truncate text-[9px] text-ink/40">{activity.sourceLabel}</p>
-                        {activity.verifiedAt && <p className="mt-1 hidden text-[9px] text-ink/30 sm:block">Verified {new Date(activity.verifiedAt).toLocaleDateString()}</p>}
+                      <span className="hidden sm:block" />
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <button type="button" onClick={() => onPlanManually?.(activity)} className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-sepia bg-white px-3 text-xs font-semibold text-ink transition-colors hover:border-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink sm:px-4"><CalendarPlus size={14} aria-hidden="true" /> Plan manually</button>
+                        <button type="button" onClick={() => onPlanActivity(activity)} className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl bg-ink px-3 text-xs font-semibold text-white transition-colors hover:bg-gold-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink focus-visible:ring-offset-2 sm:px-4"><Sparkles size={14} aria-hidden="true" /> Plan with SILAH</button>
                       </div>
-                      <button type="button" onClick={() => onPlanActivity(activity)} className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl bg-ink px-3 text-[11px] font-semibold text-white transition-colors hover:bg-gold-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink focus-visible:ring-offset-2 sm:px-4"><Sparkles size={13} aria-hidden="true" /> Plan with AI</button>
                     </div>
                   </div>
                 </div>
@@ -194,7 +196,7 @@ export function Activities({ members, onPlanActivity }: ActivitiesProps) {
       )}
 
       <p className="pb-2 text-center text-[10px] leading-relaxed text-ink/40">
-        {members.length} family member{members.length === 1 ? '' : 's'} in your Bond Map. Share timing, budget, accessibility, and invitee preferences with the AI Helper.
+        {`${members.length} family member${members.length === 1 ? '' : 's'} available to invite from your Family Tree.`}
       </p>
     </div>
   );

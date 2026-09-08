@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Check, Copy, ExternalLink, Info, MessageCircle, X } from 'lucide-react';
+import { Check, Copy, ExternalLink, Info, X } from 'lucide-react';
 import type { EphemeralInvitationLinks } from '../lib/agentInvitationLinks';
-import { absoluteInvitationUrl, whatsappInvitationUrl } from '../lib/agentInvitationLinks';
+import { absoluteInvitationUrl } from '../lib/agentInvitationLinks';
 
 export function PreparedInvitationLinks({
   prepared,
@@ -35,9 +35,7 @@ export function PreparedInvitationLinks({
           <p className="mt-1 text-[11px] leading-relaxed text-blue-800">
             Copy these private links before leaving the Assistant. They are visible only in this live result and are not saved in the conversation or browser storage.
           </p>
-          {(window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') ? (
-            <p className="mt-1 text-[11px] font-semibold text-blue-800">Localhost links normally work only on this computer.</p>
-          ) : null}
+          <p className="mt-1 text-[11px] font-semibold text-blue-800">Family members who use AILAH will also receive an in-app RSVP notification.</p>
         </div>
         <button type="button" onClick={onDismiss} className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-blue-200 hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600" aria-label="Hide prepared invitation links"><X size={17} aria-hidden="true" /></button>
       </header>
@@ -57,9 +55,6 @@ export function PreparedInvitationLinks({
                 <a href={invitationUrl} target="_blank" rel="noreferrer" className="flex min-h-11 items-center justify-center gap-1.5 rounded-lg border border-sepia px-3 text-xs font-semibold text-ink hover:border-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-ink">
                   <ExternalLink size={14} aria-hidden="true" /> Preview
                 </a>
-                <button type="button" onClick={() => window.open(whatsappInvitationUrl(invitationUrl), '_blank', 'noopener,noreferrer')} className="col-span-2 flex min-h-11 items-center justify-center gap-1.5 rounded-lg border border-green-200 bg-green-50 px-3 text-xs font-semibold text-green-800 hover:bg-green-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-700 sm:col-auto">
-                  <MessageCircle size={14} aria-hidden="true" /> Open WhatsApp
-                </button>
               </div>
             </article>
           );

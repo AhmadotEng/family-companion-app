@@ -64,7 +64,7 @@ describe('gathering planner prefill', () => {
       locationName: 'Golden Park',
       notes: 'Bring water',
       memberIds: ['dad', 'mom', 'anas'],
-      channel: 'whatsapp',
+      channel: 'share_link',
     });
   });
 

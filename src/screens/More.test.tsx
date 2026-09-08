@@ -2,10 +2,12 @@
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { LanguageProvider } from '../i18n';
 import { More } from './More';
 
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
   vi.restoreAllMocks();
 });
 
@@ -23,14 +25,12 @@ describe('More mobile account page', () => {
     expect(within(settings).getByRole('button', { name: 'Privacy and safety' }).className).toContain('min-h-14');
   });
 
-  it('preserves the existing placeholder behavior with sentence-case labels', async () => {
-    const alert = vi.spyOn(window, 'alert').mockImplementation(() => undefined);
+  it('switches the account page between English and Arabic without placeholder alerts', async () => {
     const user = userEvent.setup();
-    render(<More user={{ id: 'user-1', displayName: 'Ahmad', email: 'ahmad@example.test' }} />);
+    render(<LanguageProvider><More user={{ id: 'user-1', displayName: 'Ahmad', email: 'ahmad@example.test' }} /></LanguageProvider>);
 
-    await user.click(screen.getByRole('button', { name: 'Language: English only' }));
-    expect(alert).toHaveBeenCalledWith(expect.stringContaining('English-only'));
-    await user.click(screen.getByRole('button', { name: 'Family settings' }));
-    expect(alert).toHaveBeenLastCalledWith(expect.stringContaining('visual placeholder'));
+    await user.click(screen.getByRole('button', { name: 'Language: العربية' }));
+    expect(document.documentElement.dir).toBe('rtl');
+    expect(screen.getByRole('button', { name: 'اللغة: English' })).toBeTruthy();
   });
 });

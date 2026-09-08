@@ -128,28 +128,22 @@ describe('Assistant gathering planner integration', () => {
     expect(shell.className).toContain('h-full');
     expect(shell.dataset.composerFocused).toBe('false');
     expect(screen.queryByRole('heading', { name: 'AI Helper' })).toBeNull();
-    expect(screen.getByText('Private, review-first family support')).toBeTruthy();
+    expect(screen.queryByText('Private, review-first family support')).toBeNull();
     expect(screen.getAllByText('How can I help your family today?')).toHaveLength(1);
     expect(screen.getByTestId('assistant-message-list').className).toContain('flex-1');
-    const topBotMark = shell.querySelector('header svg.lucide-bot');
-    expect(topBotMark).toBeTruthy();
-    expect(shell.querySelectorAll('svg.lucide-bot')).toHaveLength(1);
-    const welcome = screen.getByRole('article', { name: 'AI Helper message' });
+    expect(shell.querySelectorAll('svg.lucide-bot')).toHaveLength(0);
+    const welcome = screen.getByRole('article', { name: 'SILAH message' });
     expect(welcome.dataset.agentSpeaker).toBe('assistant');
     expect(welcome.querySelector('svg.lucide-bot')).toBeNull();
 
-    const safety = screen.getByText('Confirm before anything changes').closest('details') as HTMLDetailsElement;
-    expect(safety.className).toContain('assistant-safety-panel');
-    expect(safety.open).toBe(false);
-    await user.click(screen.getByText('Confirm before anything changes'));
-    expect(safety.open).toBe(true);
+    expect(screen.queryByText('Confirm before anything changes')).toBeNull();
 
     const carousel = screen.getByTestId('assistant-prompt-carousel');
     expect(carousel.parentElement?.className).toContain('assistant-quick-prompts');
     expect(carousel.className).toContain('overflow-x-auto');
     expect(carousel.className).toContain('snap-x');
     expect(shell.querySelector('.assistant-reconnection-panel')).toBeTruthy();
-    expect(shell.querySelectorAll('.assistant-mobile-optional')).toHaveLength(4);
+    expect(shell.querySelectorAll('.assistant-mobile-optional')).toHaveLength(2);
     await user.click(carousel.querySelector('button') as HTMLButtonElement);
     expect(shell.dataset.composerFocused).toBe('false');
 
@@ -492,11 +486,11 @@ describe('Assistant gathering planner integration', () => {
       message: 'Current response',
     });
     const currentResponse = await screen.findByText('Current response');
-    expect(currentResponse.closest('[role="article"]')?.getAttribute('aria-label')).toBe('AI Helper message');
+    expect(currentResponse.closest('[role="article"]')?.getAttribute('aria-label')).toBe('SILAH message');
     expect(screen.getByRole('article', { name: 'Your message' }).dataset.agentSpeaker).toBe('user');
-    expect(screen.getAllByRole('article', { name: 'AI Helper message' })).toHaveLength(2);
+    expect(screen.getAllByRole('article', { name: 'SILAH message' })).toHaveLength(2);
     const shell = screen.getByTestId('assistant-mobile-shell');
-    expect(shell.querySelectorAll('svg.lucide-bot')).toHaveLength(1);
+    expect(shell.querySelectorAll('svg.lucide-bot')).toHaveLength(0);
     for (const message of shell.querySelectorAll('[data-agent-speaker="assistant"]')) {
       expect(message.querySelector('svg.lucide-bot')).toBeNull();
     }

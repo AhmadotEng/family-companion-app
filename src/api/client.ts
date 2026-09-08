@@ -45,7 +45,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
       credentials: 'same-origin'
     });
   } catch {
-    throw new ApiError('The Family Companion server is unavailable. Check that the local server is running.', 0, 'NETWORK_ERROR');
+    throw new ApiError('The AILAH server is unavailable. Check that the local server is running.', 0, 'NETWORK_ERROR');
   }
 
   if (response.status === 204) return undefined as T;
